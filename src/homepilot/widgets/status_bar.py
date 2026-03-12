@@ -10,12 +10,10 @@ from textual.widgets import Static
 
 
 class StatusBar(Static):
-    """Displays server connection state and current time in the footer area."""
+    """Displays host connection states and current time in the footer area."""
 
-    server_host: reactive[str] = reactive("—")
-    ssh_connected: reactive[bool] = reactive(False)
+    hosts_display: reactive[str] = reactive("No hosts")
 
     def render(self) -> str:
-        conn = "● Connected" if self.ssh_connected else "○ Disconnected"
         now = datetime.now().strftime("%H:%M:%S")
-        return f" 🖥  {self.server_host}  │  {conn}  │  {now}"
+        return f" {self.hosts_display}  │  {now}"

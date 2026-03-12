@@ -11,6 +11,7 @@ from textual.widgets import Button, Footer, Header, Label, Static
 
 from homepilot.config import save_config
 from homepilot.models import HomePilotConfig
+from homepilot.providers import ProviderRegistry
 from homepilot.widgets.log_viewer import LogViewer
 
 
@@ -30,9 +31,10 @@ class DeployScreen(Screen):
         Binding("escape", "go_back", "Back", show=True),
     ]
 
-    def __init__(self, config: HomePilotConfig, app_name: str) -> None:
+    def __init__(self, config: HomePilotConfig, registry: ProviderRegistry, app_name: str) -> None:
         super().__init__()
         self._config = config
+        self._registry = registry
         self._app_name = app_name
         self._deployer = None
 
@@ -50,18 +52,34 @@ class DeployScreen(Screen):
     def on_mount(self) -> None:
         self._start_deploy()
 
+    def _resolve_server_config(self):
+        """Get a legacy ServerConfig via the provider or config fallback."""
+        app_config = self._config.apps[self._app_name]
+        host_key = app_config.host or next(iter(self._config.hosts), "")
+        provider = self._registry.get_provider(host_key)
+
+        # If the provider is TrueNAS, use its to_server_config()
+        if provider:
+            from homepilot.providers.truenas import TrueNASProvider
+            if isinstance(provider, TrueNASProvider):
+                return provider._config.to_server_config()
+
+        # Fallback to legacy config.server property
+        return self._config.server
+
     @work(thread=True)
     def _start_deploy(self) -> None:
         """Run the deployment pipeline in a background thread."""
         from homepilot.services.deployer import Deployer
 
         app_config = self._config.apps[self._app_name]
+        server_config = self._resolve_server_config()
 
         def line_cb(line: str) -> None:
             self.app.call_from_thread(self._log_line, line)
 
         self._deployer = Deployer(
-            self._config.server,
+            server_config,
             app_config,
             line_callback=line_cb,
         )

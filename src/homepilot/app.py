@@ -7,6 +7,7 @@ from textual.binding import Binding
 
 from homepilot.config import load_config, save_config
 from homepilot.models import HomePilotConfig
+from homepilot.providers import ProviderRegistry
 from homepilot.screens.dashboard import DashboardScreen
 
 
@@ -42,7 +43,7 @@ class HomePilotApp(App):
         height: 1fr;
     }
 
-    #app-table {
+    #resource-table {
         height: 1fr;
         margin: 0 2;
     }
@@ -104,7 +105,7 @@ class HomePilotApp(App):
         width: 40;
     }
 
-    /* Add app wizard */
+    /* Add resource wizard */
     #wizard-body {
         padding: 1 2;
         height: 1fr;
@@ -124,10 +125,18 @@ class HomePilotApp(App):
     def __init__(self) -> None:
         super().__init__()
         self._config = load_config()
+        self.providers = ProviderRegistry(self._config)
         self.dark = self._config.theme != "light"
 
+    @property
+    def config(self) -> HomePilotConfig:
+        return self._config
+
     def on_mount(self) -> None:
-        self.push_screen(DashboardScreen(self._config))
+        self.push_screen(DashboardScreen(self._config, self.providers))
+
+    def on_unmount(self) -> None:
+        self.providers.disconnect_all()
 
     def action_toggle_theme(self) -> None:
         """Toggle between dark and light themes."""
