@@ -7,7 +7,7 @@ HomePilot unifies management of your home lab infrastructure behind a single Tex
 ## Supported Providers
 
 - **TrueNAS** — Docker container deployment, health monitoring, logs, backup
-- **Proxmox VE** — VM and LXC container management via the PVE REST API *(in progress)*
+- **Proxmox VE** — VM and LXC container management via the PVE REST API _(in progress)_
 
 ## Features
 
@@ -89,16 +89,16 @@ apps:
 
 ## TUI Keyboard Shortcuts
 
-| Key     | Action                    |
-|---------|---------------------------|
-| `d`     | Deploy selected app       |
-| `c`     | Configure selected app    |
-| `l`     | View logs                 |
-| `a`     | Add new app               |
-| `r`     | Refresh health status     |
-| `Enter` | View app details          |
-| `Esc`   | Go back                   |
-| `q`     | Quit                      |
+| Key     | Action                 |
+| ------- | ---------------------- |
+| `d`     | Deploy selected app    |
+| `c`     | Configure selected app |
+| `l`     | View logs              |
+| `a`     | Add new app            |
+| `r`     | Refresh health status  |
+| `Enter` | View app details       |
+| `Esc`   | Go back                |
+| `q`     | Quit                   |
 
 ## Deployment Pipeline (TrueNAS)
 
@@ -170,5 +170,6 @@ src/homepilot/
 ## Origin
 
 HomePilot was created by merging:
+
 - **DockPilot** — TrueNAS Docker deployment TUI
 - **HomeLabTools** — Proxmox and home lab infrastructure automation scripts
