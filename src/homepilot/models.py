@@ -62,7 +62,7 @@ class DeployStepStatus(str, Enum):
 
 @dataclass
 class ServerConfig:
-    """TrueNAS server connection settings."""
+    """TrueNAS server connection settings (legacy, used internally by services)."""
 
     host: str = "truenas.local"
     user: str = "neil"
@@ -73,6 +73,61 @@ class ServerConfig:
     backup_dir: str = "/tmp/homepilot-backups"
     dynamic_port_range_start: int = 30200
     dynamic_port_range_end: int = 30299
+
+
+# ---------------------------------------------------------------------------
+# Multi-host configuration
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class HostConfig:
+    """Base host configuration. Subclassed per provider type."""
+
+    type: str = ""  # "truenas" or "proxmox"
+    host: str = ""
+
+
+@dataclass
+class TrueNASHostConfig(HostConfig):
+    """TrueNAS host configuration."""
+
+    type: str = "truenas"
+    user: str = "neil"
+    ssh_key: str = ""  # empty = use SSH agent
+    docker_cmd: str = "sudo docker"
+    midclt_cmd: str = "sudo -i midclt call"
+    data_root: str = "/mnt/tank/apps"
+    backup_dir: str = "/tmp/homepilot-backups"
+    dynamic_port_range_start: int = 30200
+    dynamic_port_range_end: int = 30299
+
+    def to_server_config(self) -> ServerConfig:
+        """Convert to legacy ServerConfig for existing services."""
+        return ServerConfig(
+            host=self.host,
+            user=self.user,
+            ssh_key=self.ssh_key,
+            docker_cmd=self.docker_cmd,
+            midclt_cmd=self.midclt_cmd,
+            data_root=self.data_root,
+            backup_dir=self.backup_dir,
+            dynamic_port_range_start=self.dynamic_port_range_start,
+            dynamic_port_range_end=self.dynamic_port_range_end,
+        )
+
+
+@dataclass
+class ProxmoxHostConfig(HostConfig):
+    """Proxmox VE host configuration."""
+
+    type: str = "proxmox"
+    token_id: str = ""  # e.g. "user@pve!token-name"
+    token_secret: str = ""  # inline secret (prefer keychain/env)
+    token_source: str = "env"  # "keychain", "env", or "inline"
+    verify_ssl: bool = False
+    ssh_user: str = "root"  # for SSH-based operations
+    ssh_key: str = ""
 
 
 @dataclass
@@ -128,6 +183,7 @@ class AppConfig:
     """Complete configuration for a single deployable application."""
 
     name: str = ""
+    host: str = ""  # references a key in HomePilotConfig.hosts
     source: SourceConfig = field(default_factory=SourceConfig)
     build: BuildConfig = field(default_factory=BuildConfig)
     deploy: DeployConfig = field(default_factory=DeployConfig)
@@ -146,11 +202,41 @@ class AppConfig:
 
 @dataclass
 class HomePilotConfig:
-    """Top-level configuration: server + all apps."""
+    """Top-level configuration: hosts + apps."""
 
-    server: ServerConfig = field(default_factory=ServerConfig)
+    hosts: dict[str, HostConfig] = field(default_factory=dict)
     apps: dict[str, AppConfig] = field(default_factory=dict)
     theme: str = "dark"  # "dark" or "light"
+
+    # Legacy compatibility — returns the first TrueNAS host as a ServerConfig.
+    @property
+    def server(self) -> ServerConfig:
+        """Return the first TrueNAS host as a legacy ServerConfig."""
+        for host_cfg in self.hosts.values():
+            if isinstance(host_cfg, TrueNASHostConfig):
+                return host_cfg.to_server_config()
+        # Fallback: if no TrueNAS host, return defaults
+        return ServerConfig()
+
+    def get_host_for_app(self, app_name: str) -> HostConfig | None:
+        """Look up the host config for a given app."""
+        app = self.apps.get(app_name)
+        if app and app.host:
+            return self.hosts.get(app.host)
+        # Fallback: return first host
+        if self.hosts:
+            return next(iter(self.hosts.values()))
+        return None
+
+    def get_truenas_host(self, key: str | None = None) -> TrueNASHostConfig | None:
+        """Return a specific TrueNAS host config, or the first one found."""
+        if key and key in self.hosts:
+            h = self.hosts[key]
+            return h if isinstance(h, TrueNASHostConfig) else None
+        for h in self.hosts.values():
+            if isinstance(h, TrueNASHostConfig):
+                return h
+        return None
 
 
 # ---------------------------------------------------------------------------

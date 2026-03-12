@@ -17,7 +17,7 @@ from homepilot.config import (
     validate_config,
     _default_config,
 )
-from homepilot.models import HomePilotConfig, PortMode, SourceType
+from homepilot.models import HomePilotConfig, PortMode, SourceType, TrueNASHostConfig
 
 
 class TestDefaultConfig:
@@ -37,9 +37,13 @@ class TestDefaultConfig:
 
     def test_server_defaults(self):
         config = _default_config()
+        # server is a legacy property derived from the first TrueNAS host
         assert config.server.host == "truenas.local"
         assert config.server.user == "neil"
         assert config.server.docker_cmd == "sudo docker"
+        # Also check the new hosts dict
+        assert "truenas" in config.hosts
+        assert isinstance(config.hosts["truenas"], TrueNASHostConfig)
 
 
 class TestRoundTrip:
@@ -68,6 +72,7 @@ class TestRoundTrip:
 
         assert "house-tracker" in restored.apps
         assert restored.server.host == "truenas.local"
+        assert "truenas" in restored.hosts
 
 
 class TestValidation:
@@ -78,7 +83,8 @@ class TestValidation:
 
     def test_missing_host(self):
         config = _default_config()
-        config.server.host = ""
+        # Clear the host address on the TrueNAS host config
+        config.hosts["truenas"].host = ""
         errors = validate_config(config)
         assert any("host" in e for e in errors)
 

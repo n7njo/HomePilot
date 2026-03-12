@@ -12,12 +12,15 @@ from homepilot.models import (
     AppConfig,
     BuildConfig,
     DeployConfig,
+    HostConfig,
     HomePilotConfig,
     HealthConfig,
     PortMode,
+    ProxmoxHostConfig,
     ServerConfig,
     SourceConfig,
     SourceType,
+    TrueNASHostConfig,
     VolumeMount,
 )
 
@@ -32,12 +35,18 @@ CONFIG_FILE = CONFIG_DIR / "config.yaml"
 # ---------------------------------------------------------------------------
 
 def _default_config() -> HomePilotConfig:
-    """Return a default config pre-seeded with House_Tracker."""
+    """Return a default config pre-seeded with a TrueNAS host and House_Tracker."""
     return HomePilotConfig(
-        server=ServerConfig(),
+        hosts={
+            "truenas": TrueNASHostConfig(
+                host="truenas.local",
+                user="neil",
+            ),
+        },
         apps={
             "house-tracker": AppConfig(
                 name="house-tracker",
+                host="truenas",
                 source=SourceConfig(
                     type=SourceType.LOCAL,
                     path="/Users/neil/Local Projects/Development/Application/House_Tracker",
@@ -80,22 +89,40 @@ def _default_config() -> HomePilotConfig:
 # Serialisation helpers
 # ---------------------------------------------------------------------------
 
-def _server_to_dict(server: ServerConfig) -> dict[str, Any]:
-    return {
-        "host": server.host,
-        "user": server.user,
-        "ssh_key": server.ssh_key,
-        "docker_cmd": server.docker_cmd,
-        "midclt_cmd": server.midclt_cmd,
-        "data_root": server.data_root,
-        "backup_dir": server.backup_dir,
-        "dynamic_port_range_start": server.dynamic_port_range_start,
-        "dynamic_port_range_end": server.dynamic_port_range_end,
-    }
+def _host_to_dict(host: HostConfig) -> dict[str, Any]:
+    """Serialise a host config to a dict."""
+    if isinstance(host, TrueNASHostConfig):
+        return {
+            "type": "truenas",
+            "host": host.host,
+            "user": host.user,
+            "ssh_key": host.ssh_key,
+            "docker_cmd": host.docker_cmd,
+            "midclt_cmd": host.midclt_cmd,
+            "data_root": host.data_root,
+            "backup_dir": host.backup_dir,
+            "dynamic_port_range_start": host.dynamic_port_range_start,
+            "dynamic_port_range_end": host.dynamic_port_range_end,
+        }
+    if isinstance(host, ProxmoxHostConfig):
+        return {
+            "type": "proxmox",
+            "host": host.host,
+            "token_id": host.token_id,
+            "token_secret": host.token_secret,
+            "token_source": host.token_source,
+            "verify_ssl": host.verify_ssl,
+            "ssh_user": host.ssh_user,
+            "ssh_key": host.ssh_key,
+        }
+    return {"type": host.type, "host": host.host}
 
 
 def _app_to_dict(app: AppConfig) -> dict[str, Any]:
-    return {
+    d: dict[str, Any] = {}
+    if app.host:
+        d["host"] = app.host
+    d.update({
         "source": {
             "type": app.source.type.value,
             "path": app.source.path,
@@ -125,13 +152,17 @@ def _app_to_dict(app: AppConfig) -> dict[str, Any]:
         ],
         "env": dict(app.env),
         "last_deployed": app.last_deployed,
-    }
+    })
+    return d
 
 
 def config_to_dict(config: HomePilotConfig) -> dict[str, Any]:
     """Serialise the full config to a plain dict for YAML output."""
     return {
-        "server": _server_to_dict(config.server),
+        "hosts": {
+            name: _host_to_dict(host)
+            for name, host in config.hosts.items()
+        },
         "apps": {name: _app_to_dict(app) for name, app in config.apps.items()},
         "theme": config.theme,
     }
@@ -141,18 +172,36 @@ def config_to_dict(config: HomePilotConfig) -> dict[str, Any]:
 # Deserialisation helpers
 # ---------------------------------------------------------------------------
 
-def _parse_server(data: dict[str, Any]) -> ServerConfig:
-    return ServerConfig(
-        host=data.get("host", "truenas.local"),
-        user=data.get("user", "neil"),
-        ssh_key=data.get("ssh_key", ""),
-        docker_cmd=data.get("docker_cmd", "sudo docker"),
-        midclt_cmd=data.get("midclt_cmd", "sudo -i midclt call"),
-        data_root=data.get("data_root", "/mnt/tank/apps"),
-        backup_dir=data.get("backup_dir", "/tmp/homepilot-backups"),
-        dynamic_port_range_start=data.get("dynamic_port_range_start", 30200),
-        dynamic_port_range_end=data.get("dynamic_port_range_end", 30299),
-    )
+def _parse_host(name: str, data: dict[str, Any]) -> HostConfig:
+    """Parse a host config dict into the appropriate HostConfig subclass."""
+    host_type = data.get("type", "truenas")
+
+    if host_type == "truenas":
+        return TrueNASHostConfig(
+            type="truenas",
+            host=data.get("host", "truenas.local"),
+            user=data.get("user", "neil"),
+            ssh_key=data.get("ssh_key", ""),
+            docker_cmd=data.get("docker_cmd", "sudo docker"),
+            midclt_cmd=data.get("midclt_cmd", "sudo -i midclt call"),
+            data_root=data.get("data_root", "/mnt/tank/apps"),
+            backup_dir=data.get("backup_dir", "/tmp/homepilot-backups"),
+            dynamic_port_range_start=data.get("dynamic_port_range_start", 30200),
+            dynamic_port_range_end=data.get("dynamic_port_range_end", 30299),
+        )
+    elif host_type == "proxmox":
+        return ProxmoxHostConfig(
+            type="proxmox",
+            host=data.get("host", ""),
+            token_id=data.get("token_id", ""),
+            token_secret=data.get("token_secret", ""),
+            token_source=data.get("token_source", "env"),
+            verify_ssl=data.get("verify_ssl", False),
+            ssh_user=data.get("ssh_user", "root"),
+            ssh_key=data.get("ssh_key", ""),
+        )
+    else:
+        return HostConfig(type=host_type, host=data.get("host", ""))
 
 
 def _parse_app(name: str, data: dict[str, Any]) -> AppConfig:
@@ -165,6 +214,7 @@ def _parse_app(name: str, data: dict[str, Any]) -> AppConfig:
 
     return AppConfig(
         name=name,
+        host=data.get("host", ""),
         source=SourceConfig(
             type=SourceType(src.get("type", "local")),
             path=src.get("path", ""),
@@ -198,14 +248,38 @@ def _parse_app(name: str, data: dict[str, Any]) -> AppConfig:
     )
 
 
+def _migrate_legacy_config(data: dict[str, Any]) -> dict[str, Any]:
+    """Migrate old single-server config format to multi-host format.
+
+    Old format had a top-level ``server`` key; new format uses ``hosts``.
+    """
+    if "server" in data and "hosts" not in data:
+        server = data.pop("server")
+        data["hosts"] = {
+            "truenas": {"type": "truenas", **server},
+        }
+        # Assign all apps to the truenas host.
+        for app_data in data.get("apps", {}).values():
+            if isinstance(app_data, dict) and "host" not in app_data:
+                app_data["host"] = "truenas"
+        logger.info("Migrated legacy single-server config to multi-host format")
+    return data
+
+
 def dict_to_config(data: dict[str, Any]) -> HomePilotConfig:
     """Parse a raw YAML dict into a HomePilotConfig."""
-    server = _parse_server(data.get("server", {}))
+    data = _migrate_legacy_config(data)
+
+    hosts: dict[str, HostConfig] = {}
+    for name, host_data in data.get("hosts", {}).items():
+        hosts[name] = _parse_host(name, host_data)
+
     apps: dict[str, AppConfig] = {}
     for name, app_data in data.get("apps", {}).items():
         apps[name] = _parse_app(name, app_data)
+
     theme = data.get("theme", "dark")
-    return HomePilotConfig(server=server, apps=apps, theme=theme)
+    return HomePilotConfig(hosts=hosts, apps=apps, theme=theme)
 
 
 # ---------------------------------------------------------------------------
@@ -239,13 +313,20 @@ def validate_config(config: HomePilotConfig) -> list[str]:
     """Return a list of validation errors (empty = valid)."""
     errors: list[str] = []
 
-    if not config.server.host:
-        errors.append("server.host is required")
-    if not config.server.user:
-        errors.append("server.user is required")
+    if not config.hosts:
+        errors.append("At least one host must be configured")
+
+    for host_key, host in config.hosts.items():
+        prefix = f"hosts.{host_key}"
+        if not host.host:
+            errors.append(f"{prefix}.host is required")
+        if isinstance(host, TrueNASHostConfig) and not host.user:
+            errors.append(f"{prefix}.user is required")
 
     for name, app in config.apps.items():
         prefix = f"apps.{name}"
+        if app.host and app.host not in config.hosts:
+            errors.append(f"{prefix}.host '{app.host}' does not match any configured host")
         if app.source.type == SourceType.LOCAL and not app.source.path:
             errors.append(f"{prefix}.source.path is required for local sources")
         if app.source.type == SourceType.GIT and not app.source.git_url:
