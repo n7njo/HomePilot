@@ -7,7 +7,7 @@ HomePilot unifies management of your home lab infrastructure behind a single Tex
 ## Supported Providers
 
 - **TrueNAS** — Docker container deployment, health monitoring, logs, backup
-- **Proxmox VE** — VM and LXC container management via the PVE REST API _(in progress)_
+- **Proxmox VE** — VM and LXC container management via the PVE REST API
 
 ## Features
 
@@ -37,6 +37,7 @@ homepilot
 
 # Or use headless commands
 homepilot status          # Show status of all resources
+homepilot hosts           # List hosts and test connectivity
 homepilot deploy house-tracker  # Deploy an app
 homepilot config          # Show current configuration
 ```
