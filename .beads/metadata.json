@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "HomePilot",
+  "project_id": "4f28c08b-bd46-4cc2-845f-daadf3a24bcd"
+}
