@@ -92,6 +92,19 @@ class TrueNASService:
         )
         return out
 
+    def container_inspect(self, container_name: str) -> dict:
+        """Return parsed docker inspect output for a single container."""
+        out, _, code = self._ssh.run_command(
+            f"{self._docker} inspect {container_name}"
+        )
+        if code != 0:
+            return {}
+        try:
+            data = json.loads(out)
+            return data[0] if data else {}
+        except (json.JSONDecodeError, IndexError):
+            return {}
+
     def list_containers(self) -> list[dict[str, str]]:
         """List all containers as dicts with keys: name, status, image, ports."""
         fmt = '{{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}'
@@ -173,7 +186,10 @@ class TrueNASService:
         ]
 
         for vol in app.volumes:
-            parts.extend(["-v", f"{vol.host}:{vol.container}"])
+            vol_str = f"{vol.host}:{vol.container}"
+            if vol.mode:
+                vol_str += f":{vol.mode}"
+            parts.extend(["-v", vol_str])
 
         for key, val in app.env.items():
             parts.extend(["-e", f"{key}={val}"])

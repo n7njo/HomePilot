@@ -148,7 +148,8 @@ def _app_to_dict(app: AppConfig) -> dict[str, Any]:
             "interval_seconds": app.health.interval_seconds,
         },
         "volumes": [
-            {"host": v.host, "container": v.container} for v in app.volumes
+            {k: val for k, val in [("host", v.host), ("container", v.container), ("mode", v.mode)] if val}
+            for v in app.volumes
         ],
         "env": dict(app.env),
         "last_deployed": app.last_deployed,
@@ -240,7 +241,7 @@ def _parse_app(name: str, data: dict[str, Any]) -> AppConfig:
             interval_seconds=int(hlth.get("interval_seconds", 30)),
         ),
         volumes=[
-            VolumeMount(host=v.get("host", ""), container=v.get("container", ""))
+            VolumeMount(host=v.get("host", ""), container=v.get("container", ""), mode=v.get("mode", ""))
             for v in vols
         ],
         env={str(k): str(v) for k, v in env.items()},

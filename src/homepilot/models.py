@@ -176,6 +176,7 @@ class VolumeMount:
 
     host: str = ""
     container: str = ""
+    mode: str = ""  # optional mount option, e.g. "ro"
 
 
 @dataclass
@@ -206,7 +207,7 @@ class HomePilotConfig:
 
     hosts: dict[str, HostConfig] = field(default_factory=dict)
     apps: dict[str, AppConfig] = field(default_factory=dict)
-    theme: str = "dark"  # "dark" or "light"
+    theme: str = "textual-dark"
 
     # Legacy compatibility — returns the first TrueNAS host as a ServerConfig.
     @property
