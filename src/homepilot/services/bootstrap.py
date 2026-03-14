@@ -446,7 +446,9 @@ class TrueNASBootstrapService:
         # - home must start with /mnt or be /var/empty (homepilot is a service account)
         # home is the *parent* directory — TrueNAS creates home/<username> inside it.
         # The parent must already exist; /mnt/tank/home is a safe conventional location.
-        self._run("mkdir -p /mnt/tank/home")
+        _, mkdir_err, mkdir_code = self._run("sudo mkdir -p /mnt/tank/home && sudo chmod 755 /mnt/tank/home")
+        if mkdir_code != 0:
+            raise RuntimeError(f"Failed to create /mnt/tank/home: {mkdir_err}")
         payload = json.dumps({
             "username": HOMEPILOT_USER,
             "full_name": "HomePilot Management",
@@ -527,7 +529,9 @@ class TrueNASBootstrapService:
         users = json.loads(query_out)
         current_home = users[0].get("home", "")
         if not current_home or current_home == "/var/empty":
-            self._run("mkdir -p /mnt/tank/home")
+            _, mkdir_err, mkdir_code = self._run("sudo mkdir -p /mnt/tank/home && sudo chmod 755 /mnt/tank/home")
+            if mkdir_code != 0:
+                raise RuntimeError(f"Failed to create /mnt/tank/home: {mkdir_err}")
             home_payload = json.dumps({"home": "/mnt/tank/home", "home_create": True})
             _, home_err, home_code = self._run(
                 f"{midclt} user.update '{truenas_id}' '{home_payload}'"
