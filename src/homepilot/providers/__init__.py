@@ -71,6 +71,27 @@ class ProviderRegistry:
     def get_provider(self, host_key: str) -> InfraProvider | None:
         return self._providers.get(host_key)
 
+    def register_host(self, key: str, host_cfg: object) -> None:
+        """Add or replace the provider for a single host config."""
+        from homepilot.models import ProxmoxHostConfig, TrueNASHostConfig
+        if isinstance(host_cfg, TrueNASHostConfig):
+            from homepilot.providers.truenas import TrueNASProvider
+            self._providers[key] = TrueNASProvider(key, host_cfg)
+        elif isinstance(host_cfg, ProxmoxHostConfig):
+            from homepilot.providers.proxmox import ProxmoxProvider
+            self._providers[key] = ProxmoxProvider(key, host_cfg)
+        else:
+            logger.warning("Unknown host type for '%s': %s", key, getattr(host_cfg, "type", "?"))
+
+    def unregister_host(self, key: str) -> None:
+        """Disconnect and remove the provider for a host."""
+        provider = self._providers.pop(key, None)
+        if provider:
+            try:
+                provider.disconnect()
+            except Exception:
+                pass
+
     def list_all_resources(self) -> list[Resource]:
         """Collect resources from all connected providers."""
         resources: list[Resource] = []

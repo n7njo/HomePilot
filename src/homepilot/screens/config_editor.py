@@ -36,13 +36,20 @@ class ConfigEditorScreen(Screen):
 
     def compose(self) -> ComposeResult:
         app = self._app
+        host_options = [(k, k) for k in self._config.hosts]
+        current_host = app.host or next(iter(self._config.hosts), "")
+
         yield Header()
         yield VerticalScroll(
             Label(f"\n  Configure: {self._app_name}\n", id="config-title"),
             Static("", id="config-status"),
 
+            # Host assignment
+            Label("  Target Server:"),
+            Select(host_options, value=current_host, id="app-host"),
+
             # Source
-            Label("  Source Type:"),
+            Label("\n  Source Type:"),
             Select(
                 [(t.value, t.value) for t in SourceType],
                 value=app.source.type.value,
@@ -116,6 +123,8 @@ class ConfigEditorScreen(Screen):
         status = self.query_one("#config-status", Static)
 
         try:
+            app.host = str(self.query_one("#app-host", Select).value)
+
             source_type_val = self.query_one("#source-type", Select).value
             app.source.type = SourceType(source_type_val)
             app.source.path = self.query_one("#source-path", Input).value
