@@ -38,6 +38,7 @@ class ProxmoxProvider:
         self._host_key = host_key
         self._config = config
         self._api: ProxmoxAPI | None = None
+        self.bootstrap_status: str = "—"
 
     # -- Protocol properties -------------------------------------------------
 
@@ -75,6 +76,34 @@ class ProxmoxProvider:
 
     def is_connected(self) -> bool:
         return self._api is not None and self._api.is_connected()
+
+    def check_bootstrap(self) -> str:
+        """SSH to the host and check whether HomePilot has been bootstrapped.
+
+        Sets and returns self.bootstrap_status:
+          '✅ Bootstrapped'       — /opt/homepilot/state.yaml found
+          '⚠️  Run Bootstrap (h→b)' — SSH works but state.yaml missing
+          '❌ SSH failed'         — could not connect
+        """
+        try:
+            from homepilot.services.ssh import SSHService
+            server_cfg = self._config.to_server_config()
+            ssh = SSHService(server_cfg)
+            ssh.connect()
+            try:
+                _, _, code = ssh.run_command(
+                    "test -f /opt/homepilot/state.yaml", timeout=10
+                )
+                if code == 0:
+                    self.bootstrap_status = "✅ Bootstrapped"
+                else:
+                    self.bootstrap_status = "⚠️  Run Bootstrap (h→b)"
+            finally:
+                ssh.close()
+        except Exception as exc:
+            logger.debug("Bootstrap check SSH failed for %s: %s", self._host_key, exc)
+            self.bootstrap_status = "❌ SSH failed"
+        return self.bootstrap_status
 
     # -- Helpers -------------------------------------------------------------
 

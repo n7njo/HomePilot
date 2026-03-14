@@ -23,7 +23,7 @@ _TYPE_LABELS: dict[ResourceType, str] = {
     ResourceType.APP: "App",
 }
 
-SERVER_COLUMNS = ("Server", "Address", "Status", "Apps")
+SERVER_COLUMNS = ("Server", "Address", "Status", "Ready", "Apps")
 
 
 class DashboardScreen(Screen):
@@ -149,10 +149,12 @@ class DashboardScreen(Screen):
 
     def _populate_server_panel(self) -> None:
         """Seed the server table with configured hosts (before connecting)."""
+        from homepilot.models import TrueNASHostConfig
         srv = self.query_one("#server-table", DataTable)
         srv.clear()
         for key, host in self._config.hosts.items():
-            srv.add_row(key, host.host, "Connecting…", "—", key=key)
+            ready = "✅ Built-in" if isinstance(host, TrueNASHostConfig) else "Checking…"
+            srv.add_row(key, host.host, "Connecting…", ready, "—", key=key)
         self._update_overview(list(self._resources.values()))
 
     # -- Background connect + refresh ----------------------------------------
@@ -161,10 +163,22 @@ class DashboardScreen(Screen):
     def _connect_and_refresh(self) -> None:
         self._registry.connect_all()
         self._do_refresh()
+        self._do_bootstrap_checks()
 
     @work(thread=True)
     def _refresh_in_background(self) -> None:
         self._do_refresh()
+
+    def _do_bootstrap_checks(self) -> None:
+        """Check bootstrap status for each Proxmox host (runs in background thread)."""
+        from homepilot.providers.proxmox import ProxmoxProvider
+        for provider in self._registry.providers.values():
+            if isinstance(provider, ProxmoxProvider):
+                provider.check_bootstrap()
+        # Re-render server panel with updated statuses
+        self.app.call_from_thread(
+            self._rebuild_server_panel, list(self._resources.values())
+        )
 
     def _do_refresh(self) -> None:
         """Fetch resources from all providers (runs in background thread)."""
@@ -237,7 +251,6 @@ class DashboardScreen(Screen):
         srv = self.query_one("#server-table", DataTable)
         srv.clear()
 
-        # Count running resources per provider
         counts: dict[str, int] = {}
         for r in resources:
             counts[r.provider_name] = counts.get(r.provider_name, 0) + 1
@@ -246,8 +259,9 @@ class DashboardScreen(Screen):
             provider = self._registry.get_provider(key)
             connected = provider is not None and provider.is_connected()
             status = "🟢 Online" if connected else "🔴 Offline"
+            ready = getattr(provider, "bootstrap_status", "—") if provider else "—"
             app_count = str(counts.get(key, 0))
-            srv.add_row(key, host.host, status, app_count, key=key)
+            srv.add_row(key, host.host, status, ready, app_count, key=key)
 
     def _update_overview(self, resources: list[Resource]) -> None:
         """Refresh the left-hand overview stats panel."""

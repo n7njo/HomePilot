@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from homepilot.providers.base import (
@@ -34,6 +35,8 @@ class TrueNASProvider:
         self._config = config
         self._ssh: SSHService | None = None
         self._truenas: TrueNASService | None = None
+        # TrueNAS ships with Docker built-in — no bootstrap required.
+        self.bootstrap_status: str = "✅ Built-in"
 
     # -- Protocol properties -------------------------------------------------
 
@@ -113,14 +116,19 @@ class TrueNASProvider:
             else:
                 rs = ResourceStatus.UNKNOWN
 
-            # Try to extract host port from ports string like "0.0.0.0:30213->5000/tcp"
+            # Extract first host port from ports string like "0.0.0.0:30213->5000/tcp"
             port = 0
             ports_str = c.get("ports", "")
-            if ":" in ports_str and "->" in ports_str:
-                try:
-                    port = int(ports_str.split(":")[1].split("->")[0])
-                except (IndexError, ValueError):
-                    pass
+            m = re.search(r":(\d+)->", ports_str)
+            if m:
+                port = int(m.group(1))
+
+            # Extract uptime from status string like "Up 2 hours" or "Up 3 days"
+            uptime = ""
+            status_str_raw = c.get("status", "")
+            up_match = re.match(r"Up\s+(.+)", status_str_raw, re.IGNORECASE)
+            if up_match:
+                uptime = up_match.group(1).strip()
 
             resources.append(Resource(
                 id=c.get("name", ""),
@@ -131,9 +139,64 @@ class TrueNASProvider:
                 host=self._config.host,
                 port=port,
                 image=c.get("image", ""),
+                uptime=uptime,
             ))
 
         return resources
+
+    def extract_app_config(self, container_name: str) -> dict:
+        """Extract an AppConfig-compatible dict from a running container via docker inspect."""
+        truenas = self._ensure_connected()
+        data = truenas.container_inspect(container_name)
+        if not data:
+            return {}
+
+        host_config = data.get("HostConfig", {})
+        config = data.get("Config", {})
+
+        # Image
+        image_raw = config.get("Image", container_name)
+        image_name = image_raw.split(":")[0].split("/")[-1]
+
+        # Port bindings — pick first host port
+        host_port = 0
+        container_port = 5000
+        port_bindings = host_config.get("PortBindings") or {}
+        for proto_port, bindings in port_bindings.items():
+            if bindings:
+                try:
+                    container_port = int(proto_port.split("/")[0])
+                    host_port = int(bindings[0].get("HostPort", 0))
+                except (ValueError, IndexError):
+                    pass
+                break
+
+        # Volume mounts
+        volumes = []
+        for bind in (host_config.get("Binds") or []):
+            parts = bind.split(":")
+            if len(parts) >= 2:
+                volumes.append({"host": parts[0], "container": parts[1]})
+
+        # Environment variables (filter out internal Docker vars)
+        env: dict[str, str] = {}
+        _skip_prefixes = ("PATH=", "HOME=", "HOSTNAME=", "TERM=")
+        for entry in (config.get("Env") or []):
+            if any(entry.startswith(p) for p in _skip_prefixes):
+                continue
+            if "=" in entry:
+                k, v = entry.split("=", 1)
+                env[k] = v
+
+        return {
+            "container_name": container_name,
+            "image_name": image_name,
+            "image_tag": image_raw,
+            "host_port": host_port,
+            "container_port": container_port,
+            "volumes": volumes,
+            "env": env,
+        }
 
     def get_resource(self, resource_id: str) -> Resource | None:
         for r in self.list_resources():
