@@ -462,25 +462,39 @@ class TrueNASBootstrapService:
 
     def _step_setup_ssh(self) -> str:
         import json
-        # Determine admin home directory
-        admin_home = "/root" if self._root_user == "root" else f"/home/{self._root_user}"
+        midclt = self._host.midclt_cmd
 
-        keys_out, _, keys_code = self._run(
-            f"cat {admin_home}/.ssh/authorized_keys 2>/dev/null"
+        # On TrueNAS, SSH keys are stored in the DB — query the admin user's key
+        admin_query_out, _, admin_query_code = self._run(
+            f'{midclt} user.query \'[[[["username", "=", "{self._root_user}"]], {{"get": true}}]]\''
         )
-        if keys_code != 0 or not keys_out.strip():
-            raise RuntimeError(
-                f"No authorized_keys found for '{self._root_user}' at {admin_home}/.ssh/ — "
-                "add your SSH public key via the TrueNAS web UI first."
-            )
+        first_key = None
+        if admin_query_code == 0:
+            try:
+                admin_data = json.loads(admin_query_out)
+                sshpubkey = (admin_data.get("sshpubkey") or "").strip()
+                if sshpubkey:
+                    first_key = sshpubkey.splitlines()[0].strip() or None
+            except (json.JSONDecodeError, AttributeError):
+                pass
 
-        # Use the first non-comment key
-        first_key = next(
-            (l.strip() for l in keys_out.splitlines() if l.strip() and not l.startswith("#")),
-            None,
-        )
+        # Fall back to filesystem authorized_keys (e.g. root on non-TrueNAS paths)
         if not first_key:
-            raise RuntimeError("No valid SSH public keys found in authorized_keys")
+            admin_home = "/root" if self._root_user == "root" else f"/home/{self._root_user}"
+            keys_out, _, keys_code = self._run(
+                f"cat {admin_home}/.ssh/authorized_keys 2>/dev/null"
+            )
+            if keys_code == 0 and keys_out.strip():
+                first_key = next(
+                    (l.strip() for l in keys_out.splitlines() if l.strip() and not l.startswith("#")),
+                    None,
+                )
+
+        if not first_key:
+            raise RuntimeError(
+                f"No SSH public key found for '{self._root_user}' in TrueNAS DB or ~/.ssh/ — "
+                "add your SSH public key via the TrueNAS web UI (Credentials → Users → Edit) first."
+            )
 
         # Look up the TrueNAS-internal user ID for homepilot
         midclt = self._host.midclt_cmd
