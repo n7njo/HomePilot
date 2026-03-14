@@ -462,38 +462,36 @@ class TrueNASBootstrapService:
 
     def _step_setup_ssh(self) -> str:
         import json
-        midclt = self._host.midclt_cmd
+        import subprocess
 
-        # On TrueNAS, SSH keys are stored in the DB — query the admin user's key
-        admin_query_out, _, admin_query_code = self._run(
-            f'{midclt} user.query \'[[[["username", "=", "{self._root_user}"]], {{"get": true}}]]\''
-        )
+        # Use the same key HomePilot already uses to connect:
+        # 1. If an ssh_key file is configured, derive the public key from it.
+        # 2. Otherwise, pull the first key from the local SSH agent.
         first_key = None
-        if admin_query_code == 0:
-            try:
-                admin_data = json.loads(admin_query_out)
-                sshpubkey = (admin_data.get("sshpubkey") or "").strip()
-                if sshpubkey:
-                    first_key = sshpubkey.splitlines()[0].strip() or None
-            except (json.JSONDecodeError, AttributeError):
-                pass
-
-        # Fall back to filesystem authorized_keys (e.g. root on non-TrueNAS paths)
-        if not first_key:
-            admin_home = "/root" if self._root_user == "root" else f"/home/{self._root_user}"
-            keys_out, _, keys_code = self._run(
-                f"cat {admin_home}/.ssh/authorized_keys 2>/dev/null"
+        ssh_key_path = getattr(self._host, "ssh_key", "")
+        if ssh_key_path:
+            result = subprocess.run(
+                ["ssh-keygen", "-y", "-f", ssh_key_path],
+                capture_output=True, text=True,
             )
-            if keys_code == 0 and keys_out.strip():
-                first_key = next(
-                    (l.strip() for l in keys_out.splitlines() if l.strip() and not l.startswith("#")),
-                    None,
-                )
+            if result.returncode == 0 and result.stdout.strip():
+                first_key = result.stdout.strip().splitlines()[0].strip()
+
+        if not first_key:
+            result = subprocess.run(
+                ["ssh-add", "-L"],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    if line.strip() and not line.startswith("#"):
+                        first_key = line.strip()
+                        break
 
         if not first_key:
             raise RuntimeError(
-                f"No SSH public key found for '{self._root_user}' in TrueNAS DB or ~/.ssh/ — "
-                "add your SSH public key via the TrueNAS web UI (Credentials → Users → Edit) first."
+                "Could not determine SSH public key — ensure an ssh_key is configured "
+                "for this host or that ssh-agent is running with a key loaded."
             )
 
         # Look up the TrueNAS-internal user ID for homepilot
