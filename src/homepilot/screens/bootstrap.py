@@ -97,6 +97,9 @@ class BootstrapScreen(Screen):
                 if isinstance(host_cfg, ProxmoxHostConfig):
                     host_cfg.ssh_user = HOMEPILOT_USER
                 else:
+                    # Preserve the original admin user before overwriting
+                    if not host_cfg.admin_user:
+                        host_cfg.admin_user = host_cfg.user
                     host_cfg.user = HOMEPILOT_USER
                 save_config(self._config)
                 self._registry.register_host(self._host_key, host_cfg)

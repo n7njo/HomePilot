@@ -686,8 +686,19 @@ def make_bootstrap_service(
     """Return the correct bootstrap service for the given host type."""
     from homepilot.models import TrueNASHostConfig
     if isinstance(host_config, TrueNASHostConfig):
-        # Default root_user to the configured user (e.g. 'neil') rather than 'root'
-        effective_user = root_user if root_user != "root" else host_config.user
+        # Use admin_user (original admin preserved across bootstrap runs) if available,
+        # otherwise fall back to the current user — but never use homepilot as the admin.
+        if root_user != "root":
+            effective_user = root_user
+        elif host_config.admin_user:
+            effective_user = host_config.admin_user
+        elif host_config.user != HOMEPILOT_USER:
+            effective_user = host_config.user
+        else:
+            raise RuntimeError(
+                "Cannot determine TrueNAS admin user for bootstrap. "
+                "Set admin_user in the host config (Hosts → Edit)."
+            )
         return TrueNASBootstrapService(
             host_config, root_user=effective_user, line_callback=line_callback
         )

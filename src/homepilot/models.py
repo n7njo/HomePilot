@@ -94,6 +94,7 @@ class TrueNASHostConfig(HostConfig):
 
     type: str = "truenas"
     user: str = "neil"
+    admin_user: str = ""  # original admin for bootstrap; preserved when user → homepilot
     ssh_key: str = ""  # empty = use SSH agent
     docker_cmd: str = "sudo docker"
     midclt_cmd: str = "sudo -i midclt call"
