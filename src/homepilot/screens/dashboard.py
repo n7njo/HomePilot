@@ -5,7 +5,7 @@ from __future__ import annotations
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Label, Static
 
@@ -16,7 +16,6 @@ from homepilot.providers.base import HealthStatus, Resource, ResourceStatus, Res
 
 COLUMNS = ("Host", "Name", "Type", "Status", "Health", "Address", "Uptime", "Info", "Deploy")
 
-# Display-friendly type names
 _TYPE_LABELS: dict[ResourceType, str] = {
     ResourceType.DOCKER_CONTAINER: "Docker",
     ResourceType.LXC_CONTAINER: "LXC",
@@ -24,9 +23,47 @@ _TYPE_LABELS: dict[ResourceType, str] = {
     ResourceType.APP: "App",
 }
 
+SERVER_COLUMNS = ("Server", "Address", "Status", "Apps")
+
 
 class DashboardScreen(Screen):
     """Main dashboard showing all resources across all connected hosts."""
+
+    DEFAULT_CSS = """
+    #top-panels {
+        height: 11;
+        width: 100%;
+    }
+    #overview-panel {
+        width: 1fr;
+        border: round $panel-darken-2;
+        padding: 0 1;
+        height: 100%;
+    }
+    #overview-title {
+        text-style: bold;
+        color: $text-muted;
+    }
+    #overview-stats {
+        height: 1fr;
+    }
+    #servers-panel {
+        width: 2fr;
+        border: round $panel-darken-2;
+        height: 100%;
+    }
+    #servers-title {
+        text-style: bold;
+        color: $text-muted;
+        padding: 0 1;
+    }
+    #server-table {
+        height: 1fr;
+    }
+    #resource-table {
+        height: 1fr;
+    }
+    """
 
     BINDINGS = [
         Binding("d", "deploy_selected", "Deploy", show=True, priority=True),
@@ -47,7 +84,6 @@ class DashboardScreen(Screen):
         super().__init__()
         self._config = config
         self._registry = registry
-        # Cached resources indexed by row key  (provider_name:resource_id)
         self._resources: dict[str, Resource] = {}
 
     @staticmethod
@@ -59,83 +95,102 @@ class DashboardScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header()
         yield Vertical(
-            Label(" HomePilot — Home Lab Manager", id="dashboard-title"),
-            Static(" Loading…", id="dashboard-subtitle"),
+            Horizontal(
+                # Left: summary stats
+                Vertical(
+                    Label(" Overview", id="overview-title"),
+                    Static("", id="overview-stats"),
+                    id="overview-panel",
+                ),
+                # Right: server list
+                Vertical(
+                    Label(" Servers", id="servers-title"),
+                    DataTable(id="server-table", show_cursor=False),
+                    id="servers-panel",
+                ),
+                id="top-panels",
+            ),
             DataTable(id="resource-table"),
             id="dashboard-body",
         )
         yield Footer()
 
     def on_mount(self) -> None:
+        # Resource table
         table = self.query_one("#resource-table", DataTable)
         table.cursor_type = "row"
         for col in COLUMNS:
             table.add_column(col, key=col.lower())
 
-        # Populate with config-only apps initially, then connect in background
+        # Server table
+        srv = self.query_one("#server-table", DataTable)
+        srv.cursor_type = "none"
+        for col in SERVER_COLUMNS:
+            srv.add_column(col, key=col.lower())
+
         self._populate_config_apps()
+        self._populate_server_panel()
         self._connect_and_refresh()
 
-    # -- Initial population from config (no network needed) ------------------
+    # -- Initial population (config only, no network) ------------------------
 
     def _populate_config_apps(self) -> None:
-        """Seed the table with configured Docker apps (before providers connect)."""
+        """Seed the resource table from config before providers connect."""
         table = self.query_one("#resource-table", DataTable)
         for name, app_cfg in self._config.apps.items():
             host_key = app_cfg.host or next(iter(self._config.hosts), "")
-            host_cfg = self._config.hosts.get(host_key)
-            host_display = host_key
-            if host_cfg:
-                host_display = host_cfg.host
-
-            rkey = f"{host_key}:{name}"
             port = str(app_cfg.deploy.host_port) if app_cfg.deploy.host_port else "—"
             info = f"{app_cfg.deploy.image_name}:latest" if app_cfg.deploy.image_name else ""
-
             table.add_row(
-                host_key, name, "Docker", "Unknown", "Unknown", port, "—", info,
-                key=rkey,
+                host_key, name, "Docker", "—", "—", port, "—", info, "—",
+                key=f"{host_key}:{name}",
             )
+
+    def _populate_server_panel(self) -> None:
+        """Seed the server table with configured hosts (before connecting)."""
+        srv = self.query_one("#server-table", DataTable)
+        srv.clear()
+        for key, host in self._config.hosts.items():
+            srv.add_row(key, host.host, "Connecting…", "—", key=key)
+        self._update_overview(list(self._resources.values()))
 
     # -- Background connect + refresh ----------------------------------------
 
     @work(thread=True)
     def _connect_and_refresh(self) -> None:
-        """Connect providers and refresh the resource table."""
         self._registry.connect_all()
-        self.app.call_from_thread(self._update_subtitle)
         self._do_refresh()
 
     @work(thread=True)
     def _refresh_in_background(self) -> None:
-        """Refresh resource list without reconnecting."""
         self._do_refresh()
 
     def _do_refresh(self) -> None:
-        """Fetch resources from all providers and update the table (runs in thread)."""
+        """Fetch resources from all providers (runs in background thread)."""
         resources = self._registry.list_all_resources()
 
-        # Also run health checks for TrueNAS Docker apps that have a port
         from homepilot.services.health import check_health_sync
-
         for r in resources:
             if r.resource_type == ResourceType.DOCKER_CONTAINER and r.port:
                 try:
-                    # Find matching app config for health endpoint
                     app_cfg = self._config.apps.get(r.name)
                     endpoint = app_cfg.health.endpoint if app_cfg else "/api/health"
                     result = check_health_sync(r.host, r.port, endpoint)
-                    if result == "Healthy":
-                        r.health = HealthStatus.HEALTHY
-                    else:
-                        r.health = HealthStatus.UNHEALTHY
+                    r.health = HealthStatus.HEALTHY if result == "Healthy" else HealthStatus.UNHEALTHY
                 except Exception:
                     pass
 
-        self.app.call_from_thread(self._rebuild_table, resources)
+        self.app.call_from_thread(self._rebuild_all, resources)
 
-    def _rebuild_table(self, resources: list[Resource]) -> None:
-        """Rebuild the table with fresh resource data (runs on main thread)."""
+    def _rebuild_all(self, resources: list[Resource]) -> None:
+        """Rebuild resource table, server panel and overview (main thread)."""
+        self._rebuild_resource_table(resources)
+        self._rebuild_server_panel(resources)
+        self._update_overview(resources)
+
+    # -- Individual panel updates --------------------------------------------
+
+    def _rebuild_resource_table(self, resources: list[Resource]) -> None:
         table = self.query_one("#resource-table", DataTable)
         table.clear()
         self._resources.clear()
@@ -155,15 +210,13 @@ class DashboardScreen(Screen):
                 HealthStatus.UNHEALTHY: "💔",
             }.get(r.health, "")
 
-            if r.port:
-                scheme = "https" if r.port == 443 else "http"
-                port_col = f"{scheme}://{r.host}:{r.port}"
-            else:
-                port_col = "—"
-            uptime_col = r.uptime or "—"
-            health_col = f"{health_icon} {r.health.value}" if r.health.value != "Unknown" else "—"
-            info_col = r.image or ""
-            deploy_col = self._deploy_readiness(r)
+            port_col = (
+                f"{'https' if r.port == 443 else 'http'}://{r.host}:{r.port}"
+                if r.port else "—"
+            )
+            health_col = (
+                f"{health_icon} {r.health.value}" if r.health.value != "Unknown" else "—"
+            )
 
             table.add_row(
                 r.provider_name,
@@ -172,27 +225,58 @@ class DashboardScreen(Screen):
                 f"{status_icon} {r.status.value}",
                 health_col,
                 port_col,
-                uptime_col,
-                info_col,
-                deploy_col,
+                r.uptime or "—",
+                r.image or "",
+                self._deploy_readiness(r),
                 key=rkey,
             )
 
-        self._update_subtitle()
+    def _rebuild_server_panel(self, resources: list[Resource]) -> None:
+        """Update the server summary table with live status and app counts."""
+        srv = self.query_one("#server-table", DataTable)
+        srv.clear()
 
-    def _update_subtitle(self) -> None:
-        """Refresh the subtitle with host connection info."""
-        hosts = self._registry.connected_hosts_display()
-        count = len(self._resources)
-        subtitle = self.query_one("#dashboard-subtitle", Static)
-        subtitle.update(f" {hosts}  │  Resources: {count}")
+        # Count running resources per provider
+        counts: dict[str, int] = {}
+        for r in resources:
+            counts[r.provider_name] = counts.get(r.provider_name, 0) + 1
+
+        for key, host in self._config.hosts.items():
+            provider = self._registry.get_provider(key)
+            connected = provider is not None and provider.is_connected()
+            status = "🟢 Online" if connected else "🔴 Offline"
+            app_count = str(counts.get(key, 0))
+            srv.add_row(key, host.host, status, app_count, key=key)
+
+    def _update_overview(self, resources: list[Resource]) -> None:
+        """Refresh the left-hand overview stats panel."""
+        total = len(resources)
+        running = sum(1 for r in resources if r.status == ResourceStatus.RUNNING)
+        stopped = sum(1 for r in resources if r.status == ResourceStatus.STOPPED)
+        healthy = sum(1 for r in resources if r.health == HealthStatus.HEALTHY)
+        unhealthy = sum(1 for r in resources if r.health == HealthStatus.UNHEALTHY)
+        hosts_total = len(self._config.hosts)
+        hosts_online = sum(
+            1 for key in self._config.hosts
+            if (p := self._registry.get_provider(key)) and p.is_connected()
+        )
+
+        stats = self.query_one("#overview-stats", Static)
+        stats.update(
+            f" Servers:   {hosts_online}/{hosts_total}\n"
+            f"\n"
+            f" Resources: {total}\n"
+            f" Running:   {running}  🟢\n"
+            f" Stopped:   {stopped}  🔴\n"
+            f" Healthy:   {healthy}  💚\n"
+            f" Unhealthy: {unhealthy}  💔"
+        )
 
     # ------------------------------------------------------------------
     # Row selection helpers
     # ------------------------------------------------------------------
 
     def _get_selected_resource(self) -> Resource | None:
-        """Return the Resource for the currently highlighted row."""
         table = self.query_one("#resource-table", DataTable)
         if table.cursor_row is None:
             return None
@@ -200,10 +284,8 @@ class DashboardScreen(Screen):
             row_data = table.get_row_at(table.cursor_row)
             if not row_data:
                 return None
-            # Reconstruct the row key from provider_name + name columns
             provider_name = str(row_data[0])
             resource_name = str(row_data[1])
-            # Search for matching resource
             for rkey, r in self._resources.items():
                 if r.provider_name == provider_name and r.name == resource_name:
                     return r
@@ -212,39 +294,24 @@ class DashboardScreen(Screen):
         return None
 
     def _deploy_readiness(self, r: Resource) -> str:
-        """Return a deploy-readiness indicator for a resource.
-
-        ✅ Ready     — in config with source + image (full redeploy possible)
-        ⚙  Config   — in config but missing source (can manage, can't rebuild)
-        —            — not in HomePilot config
-        """
-        app_cfg = None
-        if r.name in self._config.apps:
-            app_cfg = self._config.apps[r.name]
-        else:
+        app_cfg = self._config.apps.get(r.name)
+        if app_cfg is None:
             for cfg in self._config.apps.values():
                 if cfg.deploy.container_name == r.name:
                     app_cfg = cfg
                     break
-
         if app_cfg is None:
             return "—"
-
         has_source = bool(app_cfg.source.path or app_cfg.source.git_url)
         has_image = bool(app_cfg.deploy.image_name)
-        if has_source and has_image:
-            return "✅ Ready"
-        return "⚙  Config"
+        return "✅ Ready" if (has_source and has_image) else "⚙  Config"
 
     def _get_selected_app_name(self) -> str | None:
-        """If the selected resource is a configured app, return the config app key."""
         r = self._get_selected_resource()
         if r is None:
             return None
-        # Direct key match (app key == container name)
         if r.name in self._config.apps:
             return r.name
-        # Match by deploy.container_name (e.g. resource "house-tracker-app" → app key "house-tracker")
         for app_key, app_cfg in self._config.apps.items():
             if app_cfg.deploy.container_name == r.name:
                 return app_key
@@ -280,7 +347,10 @@ class DashboardScreen(Screen):
         if r:
             from homepilot.screens.resource_detail import ResourceDetailScreen
             self.app.push_screen(
-                ResourceDetailScreen(self._config, self._registry, r.provider_name, r.id, initial_tab="logs")
+                ResourceDetailScreen(
+                    self._config, self._registry, r.provider_name, r.id,
+                    initial_tab="logs",
+                )
             )
 
     def action_stop_start_selected(self) -> None:
@@ -294,14 +364,10 @@ class DashboardScreen(Screen):
         if provider is None:
             return
         if r.status == ResourceStatus.RUNNING:
-            self.app.call_from_thread(
-                self.notify, f"Stopping {r.name}…", title="Stop", timeout=3
-            )
+            self.app.call_from_thread(self.notify, f"Stopping {r.name}…", title="Stop", timeout=3)
             provider.stop(r.id)
         else:
-            self.app.call_from_thread(
-                self.notify, f"Starting {r.name}…", title="Start", timeout=3
-            )
+            self.app.call_from_thread(self.notify, f"Starting {r.name}…", title="Start", timeout=3)
             provider.start(r.id)
         self._do_refresh()
 
