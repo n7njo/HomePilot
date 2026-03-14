@@ -444,18 +444,17 @@ class TrueNASBootstrapService:
         # TrueNAS rules:
         # - password_disabled=true requires the 'password' field to be omitted entirely
         # - home must start with /mnt or be /var/empty (homepilot is a service account)
-        # home is the *parent* directory — TrueNAS creates home/<username> inside it.
-        # The parent must already exist; /mnt/tank/home is a safe conventional location.
-        _, mkdir_err, mkdir_code = self._run("sudo mkdir -p /mnt/tank/home && sudo chmod 755 /mnt/tank/home")
-        if mkdir_code != 0:
-            raise RuntimeError(f"Failed to create /mnt/tank/home: {mkdir_err}")
+        # home is the *parent* ZFS dataset — TrueNAS creates a new dataset home/<username>.
+        # Must be an existing ZFS dataset; the pool root /mnt/tank always qualifies.
+        # home_create=true tells TrueNAS to create the tank/homepilot sub-dataset.
+        pool_root = self._pool_root()
         payload = json.dumps({
             "username": HOMEPILOT_USER,
             "full_name": "HomePilot Management",
             "password_disabled": True,
             "smb": False,  # must be False to allow password_disabled when SMB is enabled
             "shell": "/usr/bin/bash",
-            "home": "/mnt/tank/home",
+            "home": pool_root,
             "home_create": True,
             "group_create": True,
         })
@@ -525,14 +524,12 @@ class TrueNASBootstrapService:
             ) from exc
 
         # Ensure homepilot has a writable home (needed for sshpubkey to write authorized_keys).
-        # If user was created with /var/empty, migrate to /mnt/tank/home first.
+        # If user was created with /var/empty, migrate to the pool root dataset first.
         users = json.loads(query_out)
         current_home = users[0].get("home", "")
         if not current_home or current_home == "/var/empty":
-            _, mkdir_err, mkdir_code = self._run("sudo mkdir -p /mnt/tank/home && sudo chmod 755 /mnt/tank/home")
-            if mkdir_code != 0:
-                raise RuntimeError(f"Failed to create /mnt/tank/home: {mkdir_err}")
-            home_payload = json.dumps({"home": "/mnt/tank/home", "home_create": True})
+            pool_root = self._pool_root()
+            home_payload = json.dumps({"home": pool_root, "home_create": True})
             _, home_err, home_code = self._run(
                 f"{midclt} user.update '{truenas_id}' '{home_payload}'"
             )
@@ -619,6 +616,17 @@ class TrueNASBootstrapService:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _pool_root(self) -> str:
+        """Return the ZFS pool mount root, e.g. '/mnt/tank' from data_root '/mnt/tank/apps'."""
+        import os
+        data_root = getattr(self._host, "data_root", "/mnt/tank/apps")
+        # Walk up from data_root until we reach /mnt/<pool>
+        parts = data_root.rstrip("/").split("/")
+        # /mnt/<pool> is always depth 2 (["", "mnt", "pool"])
+        if len(parts) >= 3 and parts[1] == "mnt":
+            return f"/mnt/{parts[2]}"
+        return "/mnt/tank"  # safe fallback
 
     def _run(self, cmd: str, timeout: float = 60) -> tuple[str, str, int]:
         assert self._ssh is not None
