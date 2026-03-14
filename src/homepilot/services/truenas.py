@@ -130,15 +130,15 @@ class TrueNASService:
     # TrueNAS Custom App lifecycle (via midclt)
     # ------------------------------------------------------------------
 
-    def app_start(self, app_name: str) -> bool:
-        """Start a TrueNAS Custom App."""
+    def app_start(self, app_name: str) -> tuple[bool, str]:
+        """Start a TrueNAS Custom App. Returns (success, error_message)."""
         _, err, code = self._ssh.run_command(
             f"{self._midclt} app.start {app_name}", timeout=60
         )
         if code != 0:
             logger.error("midclt app.start failed: %s", err)
-            return False
-        return True
+            return False, err.strip()
+        return True, ""
 
     def app_stop(self, app_name: str) -> bool:
         """Stop a TrueNAS Custom App."""

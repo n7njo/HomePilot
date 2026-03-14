@@ -287,15 +287,19 @@ class Deployer:
         assert self._truenas is not None
         app_name = self._app.name
 
-        # Prefer TrueNAS Custom App if it exists.
-        if self._truenas.app_exists(app_name):
-            ok = self._truenas.app_start(app_name)
+        # Only use TrueNAS Custom App path when we have a definitive status.
+        # "UNKNOWN" means midclt app.query itself failed — fall through to docker run.
+        status = self._truenas.app_status(app_name)
+        if status not in ("NOT_FOUND", "UNKNOWN"):
+            ok, err = self._truenas.app_start(app_name)
             if not ok:
-                raise RuntimeError(f"Failed to start TrueNAS app '{app_name}'")
+                raise RuntimeError(
+                    f"Failed to start TrueNAS app '{app_name}': {err or 'unknown error'}"
+                )
             time.sleep(5)
             return f"TrueNAS app '{app_name}' started"
 
-        # Fall back to direct docker run for new apps.
+        # Fall back to direct docker run for new apps or when midclt is unavailable.
         container = self._app.deploy.container_name
         if self._truenas.container_exists(container):
             self._truenas.stop_container(container)
