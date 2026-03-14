@@ -448,6 +448,7 @@ class TrueNASBootstrapService:
             "username": HOMEPILOT_USER,
             "full_name": "HomePilot Management",
             "password_disabled": True,
+            "smb": False,  # must be False to allow password_disabled when SMB is enabled
             "shell": "/usr/bin/bash",
             "home": "/var/empty",
             "group_create": True,
