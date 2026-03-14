@@ -73,6 +73,12 @@ class HostEditorScreen(Screen):
                 Label("\n  TrueNAS Settings:"),
                 Label("  SSH User:"),
                 Input(value=tn.user if tn else "neil", id="tn-user"),
+                Label("  Admin User (original admin for bootstrap, e.g. 'neil'):"),
+                Input(
+                    value=tn.admin_user if tn else "",
+                    id="tn-admin-user",
+                    placeholder="neil",
+                ),
                 Label("  SSH Key Path (leave blank to use SSH agent):"),
                 Input(
                     value=tn.ssh_key if tn else "",
@@ -187,6 +193,7 @@ class HostEditorScreen(Screen):
                 host_cfg = TrueNASHostConfig(
                     host=addr,
                     user=self.query_one("#tn-user", Input).value.strip() or "neil",
+                    admin_user=self.query_one("#tn-admin-user", Input).value.strip(),
                     ssh_key=self.query_one("#tn-ssh-key", Input).value.strip(),
                     docker_cmd=self.query_one("#tn-docker-cmd", Input).value.strip() or "sudo docker",
                     midclt_cmd=self.query_one("#tn-midclt-cmd", Input).value.strip() or "sudo -i midclt call",

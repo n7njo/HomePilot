@@ -71,11 +71,19 @@ class BootstrapScreen(Screen):
         def line_cb(line: str) -> None:
             self.app.call_from_thread(self._append_log, line)
 
-        self._bootstrapper = make_bootstrap_service(
-            host_cfg,
-            root_user=self._root_user,
-            line_callback=line_cb,
-        )
+        try:
+            self._bootstrapper = make_bootstrap_service(
+                host_cfg,
+                root_user=self._root_user,
+                line_callback=line_cb,
+            )
+        except RuntimeError as exc:
+            self.app.call_from_thread(
+                self.query_one("#bs-status", Static).update,
+                f"[red]{exc}[/red]",
+            )
+            self._done = True
+            return
 
         succeeded = True
         for step_name, status, message in self._bootstrapper.run_sync():
@@ -101,6 +109,12 @@ class BootstrapScreen(Screen):
                     if not host_cfg.admin_user:
                         host_cfg.admin_user = host_cfg.user
                     host_cfg.user = HOMEPILOT_USER
+                    # Fix data_root to use the actual discovered pool (not /mnt/tank)
+                    from homepilot.services.bootstrap import TrueNASBootstrapService
+                    if isinstance(self._bootstrapper, TrueNASBootstrapService):
+                        pool = self._bootstrapper.pool_root
+                        if pool and pool != "/mnt/tank":
+                            host_cfg.data_root = f"{pool}/apps"
                 save_config(self._config)
                 self._registry.register_host(self._host_key, host_cfg)
 

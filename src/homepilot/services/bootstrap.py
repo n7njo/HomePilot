@@ -465,6 +465,20 @@ class TrueNASBootstrapService:
         import json
         midclt = self._host.midclt_cmd
 
+        # Skip if homepilot already has an SSH public key set
+        hp_query_out, _, hp_code = self._run(
+            f'{midclt} user.query \'[["username", "=", "{HOMEPILOT_USER}"]]\''
+        )
+        if hp_code == 0:
+            try:
+                hp_users = json.loads(hp_query_out)
+                if hp_users and (hp_users[0].get("sshpubkey") or "").strip():
+                    raise _SkipStep(f"SSH key already set for '{HOMEPILOT_USER}'")
+            except _SkipStep:
+                raise
+            except (json.JSONDecodeError, IndexError):
+                pass
+
         # Get the admin user's SSH public key from TrueNAS DB
         admin_query_out, _, admin_code = self._run(
             f'{midclt} user.query \'[["username", "=", "{self._root_user}"]]\''
@@ -538,6 +552,25 @@ class TrueNASBootstrapService:
         docker_path = docker_path_out.strip() or "/usr/bin/docker"
 
         truenas_id = self._get_homepilot_id()
+
+        # Skip if docker path already in sudo_commands_nopasswd
+        hp_query_out, _, hp_code = self._run(
+            f'{self._host.midclt_cmd} user.query \'[["username", "=", "{HOMEPILOT_USER}"]]\''
+        )
+        if hp_code == 0:
+            try:
+                hp_users = json.loads(hp_query_out)
+                if hp_users:
+                    existing_sudo = hp_users[0].get("sudo_commands_nopasswd") or []
+                    if docker_path in existing_sudo:
+                        raise _SkipStep(
+                            f"'{HOMEPILOT_USER}' already has passwordless sudo for {docker_path}"
+                        )
+            except _SkipStep:
+                raise
+            except (json.JSONDecodeError, IndexError):
+                pass
+
         payload = json.dumps({"sudo_commands_nopasswd": [docker_path]})
         _, err, code = self._run(f"{self._host.midclt_cmd} user.update '{truenas_id}' '{payload}'")
         if code != 0:
@@ -613,6 +646,11 @@ class TrueNASBootstrapService:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @property
+    def pool_root(self) -> str | None:
+        """Return the discovered pool root (set after connect step)."""
+        return getattr(self, "_pool_root", None)
 
     def _discover_pool_root(self) -> str:
         """Query the first TrueNAS pool path via midclt pool.query."""
