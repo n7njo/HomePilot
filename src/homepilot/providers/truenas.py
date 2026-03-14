@@ -85,31 +85,23 @@ class TrueNASProvider:
         """SSH to the host and check whether HomePilot has been bootstrapped.
 
         Sets and returns self.bootstrap_status:
-          '✅ Bootstrapped'       — <pool>/homepilot/state.yaml found
+          '✅ Bootstrapped'       — homepilot/state.yaml found under /mnt
           '⚠️  Run Bootstrap (h→b)' — SSH works but state.yaml missing
           '❌ SSH failed'         — could not connect
+
+        Uses find rather than midclt so it works when connected as the
+        homepilot user (which only has sudo access for docker, not midclt).
         """
-        import json
         try:
             server_cfg = self._config.to_server_config()
             ssh = SSHService(server_cfg)
             ssh.connect()
             try:
-                # Discover actual pool root via midclt
-                pool_root = "/mnt/tank"
-                midclt = self._config.midclt_cmd
-                out, _, code = ssh.run_command(f"{midclt} pool.query", timeout=10)
-                if code == 0:
-                    try:
-                        pools = json.loads(out)
-                        if pools:
-                            pool_root = pools[0]["path"]
-                    except (json.JSONDecodeError, KeyError, IndexError):
-                        pass
-
-                state_path = f"{pool_root}/homepilot/state.yaml"
-                _, _, code = ssh.run_command(f"test -f {state_path}", timeout=10)
-                if code == 0:
+                out, _, _ = ssh.run_command(
+                    "find /mnt -maxdepth 3 -name state.yaml -path '*/homepilot/*' 2>/dev/null | head -1",
+                    timeout=15,
+                )
+                if out.strip():
                     self.bootstrap_status = "✅ Bootstrapped"
                 else:
                     self.bootstrap_status = "⚠️  Run Bootstrap (h→b)"
