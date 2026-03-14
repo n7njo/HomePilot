@@ -35,8 +35,7 @@ class TrueNASProvider:
         self._config = config
         self._ssh: SSHService | None = None
         self._truenas: TrueNASService | None = None
-        # TrueNAS ships with Docker built-in — no bootstrap required.
-        self.bootstrap_status: str = "✅ Built-in"
+        self.bootstrap_status: str = "—"
 
     # -- Protocol properties -------------------------------------------------
 
@@ -81,6 +80,33 @@ class TrueNASProvider:
 
     def is_connected(self) -> bool:
         return self._ssh is not None and self._ssh.is_connected
+
+    def check_bootstrap(self) -> str:
+        """SSH to the host and check whether HomePilot has been bootstrapped.
+
+        Sets and returns self.bootstrap_status:
+          '✅ Bootstrapped'       — /mnt/tank/homepilot/state.yaml found
+          '⚠️  Run Bootstrap (h→b)' — SSH works but state.yaml missing
+          '❌ SSH failed'         — could not connect
+        """
+        from homepilot.services.bootstrap import TRUENAS_HOMEPILOT_DIR
+        state_path = f"{TRUENAS_HOMEPILOT_DIR}/state.yaml"
+        try:
+            server_cfg = self._config.to_server_config()
+            ssh = SSHService(server_cfg)
+            ssh.connect()
+            try:
+                _, _, code = ssh.run_command(f"test -f {state_path}", timeout=10)
+                if code == 0:
+                    self.bootstrap_status = "✅ Bootstrapped"
+                else:
+                    self.bootstrap_status = "⚠️  Run Bootstrap (h→b)"
+            finally:
+                ssh.close()
+        except Exception as exc:
+            logger.debug("Bootstrap check SSH failed for %s: %s", self._host_key, exc)
+            self.bootstrap_status = "❌ SSH failed"
+        return self.bootstrap_status
 
     # -- Helpers -------------------------------------------------------------
 

@@ -170,10 +170,11 @@ class DashboardScreen(Screen):
         self._do_refresh()
 
     def _do_bootstrap_checks(self) -> None:
-        """Check bootstrap status for each Proxmox host (runs in background thread)."""
+        """Check bootstrap status for each host (runs in background thread)."""
         from homepilot.providers.proxmox import ProxmoxProvider
+        from homepilot.providers.truenas import TrueNASProvider
         for provider in self._registry.providers.values():
-            if isinstance(provider, ProxmoxProvider):
+            if isinstance(provider, (ProxmoxProvider, TrueNASProvider)):
                 provider.check_bootstrap()
         # Re-render server panel with updated statuses
         self.app.call_from_thread(

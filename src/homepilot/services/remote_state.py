@@ -42,9 +42,12 @@ STATE_VERSION = 1
 class RemoteStateService:
     """Read and write HomePilot's managed-app state on a remote host."""
 
-    def __init__(self, ssh: SSHService, host_key: str) -> None:
+    def __init__(
+        self, ssh: SSHService, host_key: str, state_path: str = STATE_PATH
+    ) -> None:
         self._ssh = ssh
         self._host_key = host_key
+        self._state_path = state_path
 
     # ------------------------------------------------------------------
     # Public API
@@ -52,7 +55,7 @@ class RemoteStateService:
 
     def read(self) -> dict[str, Any]:
         """Return the parsed state dict, or an empty initial state."""
-        out, _, code = self._ssh.run_command(f"cat {STATE_PATH} 2>/dev/null")
+        out, _, code = self._ssh.run_command(f"cat {self._state_path} 2>/dev/null")
         if code != 0 or not out.strip():
             return self._empty_state()
         try:
@@ -71,9 +74,11 @@ class RemoteStateService:
         state["last_updated"] = datetime.now(timezone.utc).isoformat()
         raw = yaml.dump(state, default_flow_style=False, allow_unicode=True)
         # Write via heredoc to avoid shell quoting issues with special chars
+        import os
+        state_dir = os.path.dirname(self._state_path)
         escaped = raw.replace("'", "'\"'\"'")
         self._ssh.run_command(
-            f"mkdir -p /opt/homepilot && printf '%s' '{escaped}' > {STATE_PATH}"
+            f"mkdir -p {state_dir} && printf '%s' '{escaped}' > {self._state_path}"
         )
 
     def record_deploy(self, app: AppConfig) -> None:

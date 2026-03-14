@@ -1,8 +1,13 @@
-"""Host bootstrap service — provisions a Proxmox (or any Debian-based) host
-for HomePilot management.
+"""Host bootstrap service — provisions a host for HomePilot management.
 
-Bootstrap steps
----------------
+Two implementations:
+- BootstrapService        — Proxmox / Debian-based hosts
+- TrueNASBootstrapService — TrueNAS SCALE hosts (Docker built-in, midclt user mgmt)
+
+Use make_bootstrap_service(host_cfg, ...) to get the right one.
+
+Proxmox bootstrap steps
+-----------------------
 1. connect       — SSH as the configured root/admin user
 2. check_os      — Verify Debian/Ubuntu and note OS version
 3. install_docker — Install Docker CE if not present
@@ -12,8 +17,18 @@ Bootstrap steps
 7. write_state   — Write initial state.yaml
 8. verify        — Re-connect as homepilot and confirm docker access
 
-After bootstrap the caller should update the host config's ssh_user
-from "root" to "homepilot".
+TrueNAS bootstrap steps
+-----------------------
+1. connect        — SSH as current admin user
+2. create_user    — Create 'homepilot' user via midclt user.create
+3. setup_ssh      — Authorise admin SSH key via midclt user.update
+4. setup_sudoers  — Grant passwordless sudo for docker via /etc/sudoers.d/homepilot
+5. setup_dirs     — Create /mnt/tank/homepilot/ state directory
+6. write_state    — Write initial state.yaml
+7. verify         — Re-connect as homepilot, confirm sudo docker ps
+
+After bootstrap the caller should update the host config's user/ssh_user
+to 'homepilot'.
 """
 
 from __future__ import annotations
@@ -39,6 +54,7 @@ LineCallback = Callable[[str], None]
 
 HOMEPILOT_USER = "homepilot"
 HOMEPILOT_DIR = "/opt/homepilot"
+TRUENAS_HOMEPILOT_DIR = "/mnt/tank/homepilot"
 
 _DOCKER_INSTALL_SCRIPT = """\
 export DEBIAN_FRONTEND=noninteractive
@@ -302,3 +318,291 @@ class BootstrapService:
     def _emit(self, line: str) -> None:
         if self._line_cb:
             self._line_cb(line)
+
+
+# ---------------------------------------------------------------------------
+# TrueNAS SCALE bootstrap
+# ---------------------------------------------------------------------------
+
+class TrueNASBootstrapService:
+    """Provision a TrueNAS SCALE host for HomePilot management.
+
+    TrueNAS SCALE ships with Docker built-in, so there is no Docker install
+    step.  User creation goes through ``midclt call user.create`` rather than
+    ``useradd``.  The state directory lives at /mnt/tank/homepilot/ instead
+    of /opt/homepilot/.
+    """
+
+    def __init__(
+        self,
+        host_config: "TrueNASHostConfig",
+        *,
+        root_user: str = "root",
+        line_callback: LineCallback | None = None,
+    ) -> None:
+        self._host = host_config
+        self._root_user = root_user
+        self._line_cb = line_callback
+        self._aborted = False
+        self._ssh: SSHService | None = None
+        self.state: DeploymentState | None = None
+
+    def abort(self) -> None:
+        self._aborted = True
+
+    # ------------------------------------------------------------------
+    # Public run interface (mirrors BootstrapService)
+    # ------------------------------------------------------------------
+
+    def run_sync(self) -> Generator[BootstrapEvent, None, None]:
+        self.state = DeploymentState(
+            app_name=f"bootstrap:{self._host.host}",
+            started_at=datetime.now(timezone.utc),
+        )
+        steps = self._build_steps()
+        self.state.steps = steps
+
+        for step in steps:
+            if self._aborted:
+                step.status = DeployStepStatus.SKIPPED
+                yield (step.name, "skipped", "Aborted")
+                continue
+
+            step.status = DeployStepStatus.RUNNING
+            step.started_at = datetime.now(timezone.utc)
+            yield (step.name, "running", step.description)
+
+            try:
+                message = self._execute_step(step.name)
+                step.status = DeployStepStatus.SUCCESS
+                step.message = message
+                step.finished_at = datetime.now(timezone.utc)
+                yield (step.name, "success", message)
+            except _SkipStep as exc:
+                step.status = DeployStepStatus.SKIPPED
+                step.message = str(exc)
+                step.finished_at = datetime.now(timezone.utc)
+                yield (step.name, "skipped", str(exc))
+            except Exception as exc:
+                step.status = DeployStepStatus.FAILED
+                step.message = str(exc)
+                step.finished_at = datetime.now(timezone.utc)
+                yield (step.name, "failed", str(exc))
+                self._aborted = True
+
+        self.state.finished_at = datetime.now(timezone.utc)
+        self.state.aborted = self._aborted
+        if self._ssh:
+            self._ssh.close()
+
+    # ------------------------------------------------------------------
+    # Steps
+    # ------------------------------------------------------------------
+
+    def _build_steps(self) -> list[DeployStep]:
+        return [
+            DeployStep("connect", f"Connect to {self._host.host} as {self._root_user}"),
+            DeployStep("create_user", f"Create '{HOMEPILOT_USER}' user via midclt"),
+            DeployStep("setup_ssh", f"Authorise SSH key for '{HOMEPILOT_USER}'"),
+            DeployStep("setup_sudoers", "Grant passwordless sudo for docker"),
+            DeployStep("setup_dirs", f"Create {TRUENAS_HOMEPILOT_DIR}/ directory"),
+            DeployStep("write_state", "Write initial state file"),
+            DeployStep("verify", f"Verify '{HOMEPILOT_USER}' can run sudo docker"),
+        ]
+
+    def _execute_step(self, name: str) -> str:
+        return {
+            "connect": self._step_connect,
+            "create_user": self._step_create_user,
+            "setup_ssh": self._step_setup_ssh,
+            "setup_sudoers": self._step_setup_sudoers,
+            "setup_dirs": self._step_setup_dirs,
+            "write_state": self._step_write_state,
+            "verify": self._step_verify,
+        }[name]()
+
+    def _step_connect(self) -> str:
+        from homepilot.models import ServerConfig
+        server = ServerConfig(
+            host=self._host.host,
+            user=self._root_user,
+            ssh_key=getattr(self._host, "ssh_key", ""),
+        )
+        self._ssh = SSHService(server)
+        self._ssh.connect()
+        out, _, _ = self._run("whoami")
+        return f"Connected as {out.strip()} to {self._host.host}"
+
+    def _step_create_user(self) -> str:
+        import json
+        # Check if user already exists (Unix level)
+        _, _, code = self._run(f"id {HOMEPILOT_USER}")
+        if code == 0:
+            raise _SkipStep(f"User '{HOMEPILOT_USER}' already exists")
+
+        midclt = self._host.midclt_cmd
+        payload = json.dumps({
+            "username": HOMEPILOT_USER,
+            "full_name": "HomePilot Management",
+            "password": "",
+            "password_disabled": True,
+            "shell": "/usr/bin/bash",
+            "home": f"/home/{HOMEPILOT_USER}",
+            "home_create": True,
+            "group_create": True,
+        })
+        # Single-quote the JSON payload — safe as JSON values contain no single quotes here
+        out, err, code = self._run(f"{midclt} user.create '{payload}'")
+        if code != 0:
+            raise RuntimeError(f"midclt user.create failed: {err or out}")
+        uid = out.strip()
+        return f"Created user '{HOMEPILOT_USER}' (TrueNAS id: {uid})"
+
+    def _step_setup_ssh(self) -> str:
+        import json
+        # Determine admin home directory
+        admin_home = "/root" if self._root_user == "root" else f"/home/{self._root_user}"
+
+        keys_out, _, keys_code = self._run(
+            f"cat {admin_home}/.ssh/authorized_keys 2>/dev/null"
+        )
+        if keys_code != 0 or not keys_out.strip():
+            raise RuntimeError(
+                f"No authorized_keys found for '{self._root_user}' at {admin_home}/.ssh/ — "
+                "add your SSH public key via the TrueNAS web UI first."
+            )
+
+        # Use the first non-comment key
+        first_key = next(
+            (l.strip() for l in keys_out.splitlines() if l.strip() and not l.startswith("#")),
+            None,
+        )
+        if not first_key:
+            raise RuntimeError("No valid SSH public keys found in authorized_keys")
+
+        # Look up the TrueNAS-internal user ID for homepilot
+        midclt = self._host.midclt_cmd
+        query_out, _, query_code = self._run(
+            f'{midclt} user.query \'[[[["username", "=", "{HOMEPILOT_USER}"]], {{"get": true}}]]\''
+        )
+        if query_code != 0:
+            raise RuntimeError(f"midclt user.query failed: {query_out}")
+        try:
+            user_data = json.loads(query_out)
+            truenas_id = user_data.get("id")
+            if truenas_id is None:
+                raise ValueError("no 'id' in response")
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise RuntimeError(
+                f"Failed to parse midclt user.query response: {query_out[:200]}"
+            ) from exc
+
+        # Update the user with the SSH public key
+        # SSH keys are base64 + optional comment — no single quotes, safe to embed in JSON
+        update_payload = json.dumps([truenas_id, {"sshpubkey": first_key}])
+        _, err, code = self._run(f"{midclt} user.update '{update_payload}'")
+        if code != 0:
+            raise RuntimeError(f"midclt user.update (sshpubkey) failed: {err}")
+
+        return f"SSH key authorised for '{HOMEPILOT_USER}' (TrueNAS id: {truenas_id})"
+
+    def _step_setup_sudoers(self) -> str:
+        # Find the docker binary path
+        docker_path_out, _, code = self._run("which docker || command -v docker")
+        docker_path = docker_path_out.strip() or "/usr/bin/docker"
+
+        sudoers_line = f"{HOMEPILOT_USER} ALL=(ALL) NOPASSWD: {docker_path}"
+        sudoers_file = "/etc/sudoers.d/homepilot"
+
+        # Write the sudoers drop-in (chmod 440 required for sudo to accept it)
+        escaped = sudoers_line.replace("'", "'\"'\"'")
+        _, err, code = self._run(
+            f"printf '%s\\n' '{escaped}' > {sudoers_file} && chmod 440 {sudoers_file}"
+        )
+        if code != 0:
+            raise RuntimeError(f"Failed to write {sudoers_file}: {err}")
+
+        # Validate with visudo -c
+        _, err, code = self._run(f"visudo -c -f {sudoers_file}")
+        if code != 0:
+            self._run(f"rm -f {sudoers_file}")
+            raise RuntimeError(f"sudoers syntax check failed: {err}")
+
+        return f"Wrote {sudoers_file}: {HOMEPILOT_USER} may sudo {docker_path} without password"
+
+    def _step_setup_dirs(self) -> str:
+        _, err, code = self._run(f"mkdir -p {TRUENAS_HOMEPILOT_DIR}")
+        if code != 0:
+            raise RuntimeError(f"mkdir failed for {TRUENAS_HOMEPILOT_DIR}: {err}")
+        self._run(f"chown {HOMEPILOT_USER} {TRUENAS_HOMEPILOT_DIR}")
+        return f"Created {TRUENAS_HOMEPILOT_DIR}/, owned by {HOMEPILOT_USER}"
+
+    def _step_write_state(self) -> str:
+        from homepilot.services.remote_state import RemoteStateService
+        state_path = f"{TRUENAS_HOMEPILOT_DIR}/state.yaml"
+        state_svc = RemoteStateService(self._ssh, host_key=self._host.host, state_path=state_path)
+        state = state_svc.read()
+        state_svc.write(state)
+        return f"State file written to {self._host.host}:{state_path}"
+
+    def _step_verify(self) -> str:
+        from homepilot.models import ServerConfig
+        test_server = ServerConfig(
+            host=self._host.host,
+            user=HOMEPILOT_USER,
+            ssh_key=getattr(self._host, "ssh_key", ""),
+            docker_cmd=self._host.docker_cmd,
+        )
+        test_ssh = SSHService(test_server)
+        try:
+            test_ssh.connect()
+            # TrueNAS docker runs as sudo docker
+            docker_cmd = self._host.docker_cmd
+            out, err, code = test_ssh.run_command(f"{docker_cmd} ps --format '{{{{.Names}}}}' 2>&1 | head -5")
+            test_ssh.close()
+            if code != 0:
+                raise RuntimeError(
+                    f"'{HOMEPILOT_USER}' connected via SSH but '{docker_cmd} ps' failed — "
+                    f"check sudoers configuration. Error: {err or out}"
+                )
+            containers = out.strip() or "(none running)"
+            return f"'{HOMEPILOT_USER}' can SSH and run {docker_cmd}. Running: {containers}"
+        except Exception as exc:
+            try:
+                test_ssh.close()
+            except Exception:
+                pass
+            raise RuntimeError(f"Could not connect as '{HOMEPILOT_USER}': {exc}") from exc
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _run(self, cmd: str, timeout: float = 60) -> tuple[str, str, int]:
+        assert self._ssh is not None
+        return self._ssh.run_command(cmd, timeout=timeout)
+
+    def _emit(self, line: str) -> None:
+        if self._line_cb:
+            self._line_cb(line)
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+def make_bootstrap_service(
+    host_config: "ProxmoxHostConfig | TrueNASHostConfig",
+    *,
+    root_user: str = "root",
+    line_callback: LineCallback | None = None,
+) -> "BootstrapService | TrueNASBootstrapService":
+    """Return the correct bootstrap service for the given host type."""
+    from homepilot.models import TrueNASHostConfig
+    if isinstance(host_config, TrueNASHostConfig):
+        # Default root_user to the configured user (e.g. 'neil') rather than 'root'
+        effective_user = root_user if root_user != "root" else host_config.user
+        return TrueNASBootstrapService(
+            host_config, root_user=effective_user, line_callback=line_callback
+        )
+    return BootstrapService(host_config, root_user=root_user, line_callback=line_callback)

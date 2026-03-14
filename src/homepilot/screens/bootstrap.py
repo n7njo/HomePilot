@@ -59,7 +59,7 @@ class BootstrapScreen(Screen):
 
     @work(thread=True)
     def _run_bootstrap(self) -> None:
-        from homepilot.services.bootstrap import BootstrapService
+        from homepilot.services.bootstrap import make_bootstrap_service
 
         host_cfg = self._config.hosts.get(self._host_key)
         if host_cfg is None:
@@ -71,7 +71,7 @@ class BootstrapScreen(Screen):
         def line_cb(line: str) -> None:
             self.app.call_from_thread(self._append_log, line)
 
-        self._bootstrapper = BootstrapService(
+        self._bootstrapper = make_bootstrap_service(
             host_cfg,
             root_user=self._root_user,
             line_callback=line_cb,
