@@ -129,6 +129,14 @@ class ProxmoxHostConfig(HostConfig):
     ssh_user: str = "root"  # for SSH-based operations
     ssh_key: str = ""
 
+    def to_server_config(self) -> "ServerConfig":
+        """Return a minimal ServerConfig for SSH operations."""
+        return ServerConfig(
+            host=self.host,
+            user=self.ssh_user,
+            ssh_key=self.ssh_key,
+        )
+
 
 @dataclass
 class SourceConfig:

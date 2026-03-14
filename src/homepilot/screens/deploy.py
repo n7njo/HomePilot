@@ -7,7 +7,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Header, Label, Static
+from textual.widgets import Footer, Header, Label, Static
 
 from homepilot.config import save_config
 from homepilot.models import HomePilotConfig
@@ -28,6 +28,7 @@ class DeployScreen(Screen):
     """Deployment progress display with live output."""
 
     BINDINGS = [
+        Binding("ctrl+x", "abort", "Abort", show=True),
         Binding("escape", "go_back", "Back", show=True),
     ]
 
@@ -37,14 +38,15 @@ class DeployScreen(Screen):
         self._registry = registry
         self._app_name = app_name
         self._deployer = None
+        self._done = False
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield Vertical(
             Label(f"  🚀 Deploying: {self._app_name}", id="deploy-title"),
+            Static("", id="deploy-status"),
             VerticalScroll(id="steps-container"),
             LogViewer(id="deploy-log"),
-            Button("⛔ Abort", id="btn-abort", variant="error"),
             id="deploy-body",
         )
         yield Footer()
@@ -53,46 +55,44 @@ class DeployScreen(Screen):
         self._start_deploy()
 
     def _resolve_server_config(self):
-        """Get a legacy ServerConfig via the provider or config fallback."""
         app_config = self._config.apps[self._app_name]
         host_key = app_config.host or next(iter(self._config.hosts), "")
         provider = self._registry.get_provider(host_key)
 
-        # If the provider is TrueNAS, use its to_server_config()
         if provider:
             from homepilot.providers.truenas import TrueNASProvider
             if isinstance(provider, TrueNASProvider):
                 return provider._config.to_server_config()
 
-        # Fallback to legacy config.server property
         return self._config.server
 
     @work(thread=True)
     def _start_deploy(self) -> None:
-        """Run the deployment pipeline in a background thread."""
-        from homepilot.services.deployer import Deployer
-
         app_config = self._config.apps[self._app_name]
-        server_config = self._resolve_server_config()
+        host_key = app_config.host or next(iter(self._config.hosts), "")
+        provider = self._registry.get_provider(host_key)
 
         def line_cb(line: str) -> None:
             self.app.call_from_thread(self._log_line, line)
 
-        self._deployer = Deployer(
-            server_config,
-            app_config,
-            line_callback=line_cb,
-        )
+        from homepilot.providers.proxmox import ProxmoxProvider
+        if isinstance(provider, ProxmoxProvider):
+            from homepilot.services.proxmox_deployer import ProxmoxDeployer
+            self._deployer = ProxmoxDeployer(provider._config, app_config, line_callback=line_cb)
+        else:
+            from homepilot.services.deployer import Deployer
+            server_config = self._resolve_server_config()
+            self._deployer = Deployer(server_config, app_config, line_callback=line_cb)
 
         for step_name, status, message in self._deployer.run_sync():
             icon = STEP_ICONS.get(status, "•")
-            step_text = f" {icon}  {step_name}: {message}"
-            css_class = f"step-{status}"
-            self.app.call_from_thread(self._add_step, step_text, css_class)
+            self.app.call_from_thread(
+                self._add_step,
+                f" {icon}  {step_name}: {message}",
+                f"step-{status}",
+            )
 
-        # Final summary
         if self._deployer.state and self._deployer.state.succeeded:
-            # Record the deploy timestamp.
             from datetime import datetime, timezone
             app_cfg = self._config.apps.get(self._app_name)
             if app_cfg:
@@ -106,38 +106,33 @@ class DeployScreen(Screen):
                 self._add_step, "\n ❌  Deployment failed.", "step-failed"
             )
 
-        # Disable abort button.
-        self.app.call_from_thread(self._disable_abort)
+        self._done = True
+        self.app.call_from_thread(self._mark_done)
 
     def _add_step(self, text: str, css_class: str) -> None:
-        """Add a step label to the steps container."""
         try:
             container = self.query_one("#steps-container", VerticalScroll)
-            label = Label(text, classes=f"step-row {css_class}")
-            container.mount(label)
+            container.mount(Label(text, classes=f"step-row {css_class}"))
             container.scroll_end()
         except Exception:
             pass
 
     def _log_line(self, line: str) -> None:
-        """Append a line to the deploy log viewer."""
         try:
-            log = self.query_one("#deploy-log", LogViewer)
-            log.append_line(line)
+            self.query_one("#deploy-log", LogViewer).append_line(line)
         except Exception:
             pass
 
-    def _disable_abort(self) -> None:
-        """Disable the abort button after deployment completes."""
+    def _mark_done(self) -> None:
         try:
-            btn = self.query_one("#btn-abort", Button)
-            btn.disabled = True
-            btn.label = "Done"
+            self.query_one("#deploy-status", Static).update(
+                "[green]Deployment complete — press Escape to return[/green]"
+            )
         except Exception:
             pass
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-abort" and self._deployer:
+    def action_abort(self) -> None:
+        if self._deployer and not self._done:
             self._deployer.abort()
             self._log_line("⛔ Abort requested…")
 
