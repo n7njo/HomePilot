@@ -518,10 +518,10 @@ class TrueNASBootstrapService:
                 f"Failed to parse midclt user.query response: {query_out[:200]}"
             ) from exc
 
-        # Update the user with the SSH public key
-        # SSH keys are base64 + optional comment — no single quotes, safe to embed in JSON
-        update_payload = json.dumps([truenas_id, {"sshpubkey": first_key}])
-        _, err, code = self._run(f"{midclt} user.update '{update_payload}'")
+        # Update the user with the SSH public key.
+        # midclt call user.update takes two separate positional args: id and data dict.
+        data_payload = json.dumps({"sshpubkey": first_key})
+        _, err, code = self._run(f"{midclt} user.update '{truenas_id}' '{data_payload}'")
         if code != 0:
             raise RuntimeError(f"midclt user.update (sshpubkey) failed: {err}")
 
