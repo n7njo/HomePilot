@@ -404,10 +404,10 @@ class TrueNASBootstrapService:
             DeployStep("connect", f"Connect to {self._host.host} as {self._root_user}"),
             DeployStep("create_user", f"Create '{HOMEPILOT_USER}' user via midclt"),
             DeployStep("setup_ssh", f"Authorise SSH key for '{HOMEPILOT_USER}'"),
-            DeployStep("setup_sudoers", "Grant passwordless sudo for docker"),
-            DeployStep("setup_dirs", f"Create {TRUENAS_HOMEPILOT_DIR}/ directory"),
+            DeployStep("setup_sudo", f"Grant '{HOMEPILOT_USER}' passwordless sudo for docker"),
+            DeployStep("setup_dirs", "Create HomePilot state directory"),
             DeployStep("write_state", "Write initial state file"),
-            DeployStep("verify", f"Verify '{HOMEPILOT_USER}' can run sudo docker"),
+            DeployStep("verify", f"Verify '{HOMEPILOT_USER}' can SSH and run docker"),
         ]
 
     def _execute_step(self, name: str) -> str:
@@ -415,7 +415,7 @@ class TrueNASBootstrapService:
             "connect": self._step_connect,
             "create_user": self._step_create_user,
             "setup_ssh": self._step_setup_ssh,
-            "setup_sudoers": self._step_setup_sudoers,
+            "setup_sudo": self._step_setup_sudo,
             "setup_dirs": self._step_setup_dirs,
             "write_state": self._step_write_state,
             "verify": self._step_verify,
@@ -431,62 +431,59 @@ class TrueNASBootstrapService:
         self._ssh = SSHService(server)
         self._ssh.connect()
         out, _, _ = self._run("whoami")
-        return f"Connected as {out.strip()} to {self._host.host}"
+        # Cache pool info on connect so later steps can use it
+        self._pool_root = self._discover_pool_root()
+        return f"Connected as {out.strip()} to {self._host.host} (pool: {self._pool_root})"
 
     def _step_create_user(self) -> str:
         import json
-        # Check if user already exists (Unix level)
         _, _, code = self._run(f"id {HOMEPILOT_USER}")
         if code == 0:
             raise _SkipStep(f"User '{HOMEPILOT_USER}' already exists")
 
         midclt = self._host.midclt_cmd
-        # TrueNAS rules:
-        # - password_disabled=true requires the 'password' field to be omitted entirely
-        # - home must start with /mnt or be /var/empty (homepilot is a service account)
-        # home is the *parent* ZFS dataset — TrueNAS creates a new dataset home/<username>.
-        # Must be an existing ZFS dataset; the pool root /mnt/tank always qualifies.
-        # home_create=true tells TrueNAS to create the tank/homepilot sub-dataset.
-        pool_root = self._home_dataset_path()
+        # home_parent must be an existing ZFS dataset (TrueNAS creates <parent>/homepilot).
+        # Find an existing Home/home dataset under the pool, or fall back to pool root.
+        home_parent = self._find_home_parent()
         payload = json.dumps({
             "username": HOMEPILOT_USER,
             "full_name": "HomePilot Management",
             "password_disabled": True,
-            "smb": False,  # must be False to allow password_disabled when SMB is enabled
+            "smb": False,
             "shell": "/usr/bin/bash",
-            "home": pool_root,
+            "home": home_parent,
             "home_create": True,
             "group_create": True,
         })
-        # Single-quote the JSON payload — safe as JSON values contain no single quotes here
         out, err, code = self._run(f"{midclt} user.create '{payload}'")
         if code != 0:
             raise RuntimeError(f"midclt user.create failed: {err or out}")
-        uid = out.strip()
-        return f"Created user '{HOMEPILOT_USER}' (TrueNAS id: {uid})"
+        uid_info = json.loads(out.strip()) if out.strip().startswith("{") else out.strip()
+        return f"Created user '{HOMEPILOT_USER}' ({uid_info})"
 
     def _step_setup_ssh(self) -> str:
         import json
-        import subprocess
+        midclt = self._host.midclt_cmd
 
-        # Use the same key HomePilot already uses to connect:
-        # 1. If an ssh_key file is configured, derive the public key from it.
-        # 2. Otherwise, scan ~/.ssh/*.pub (same files Paramiko auto-discovers).
-        from pathlib import Path
-
+        # Get the admin user's SSH public key from TrueNAS DB
+        admin_query_out, _, admin_code = self._run(
+            f'{midclt} user.query \'[["username", "=", "{self._root_user}"]]\''
+        )
         first_key = None
-        ssh_key_path = getattr(self._host, "ssh_key", "")
-        if ssh_key_path:
-            result = subprocess.run(
-                ["ssh-keygen", "-y", "-f", ssh_key_path],
-                capture_output=True, text=True,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                first_key = result.stdout.strip().splitlines()[0].strip()
+        if admin_code == 0:
+            try:
+                admin_users = json.loads(admin_query_out)
+                if admin_users:
+                    sshpubkey = (admin_users[0].get("sshpubkey") or "").strip()
+                    if sshpubkey:
+                        first_key = sshpubkey.splitlines()[0].strip() or None
+            except (json.JSONDecodeError, IndexError):
+                pass
 
+        # Fall back to local ~/.ssh/*.pub files
         if not first_key:
-            ssh_dir = Path.home() / ".ssh"
-            for pub_file in sorted(ssh_dir.glob("*.pub")):
+            from pathlib import Path
+            for pub_file in sorted((Path.home() / ".ssh").glob("*.pub")):
                 try:
                     for line in pub_file.read_text().splitlines():
                         if line.strip() and not line.startswith("#"):
@@ -499,86 +496,65 @@ class TrueNASBootstrapService:
 
         if not first_key:
             raise RuntimeError(
-                "Could not find an SSH public key in ~/.ssh/*.pub — "
-                "ensure an ssh_key is configured for this host or that "
-                "a public key exists in ~/.ssh/."
+                f"No SSH public key found for '{self._root_user}' in TrueNAS DB or ~/.ssh/*.pub"
             )
 
-        # Look up the TrueNAS-internal user ID for homepilot.
-        # Pass the filter as a separate shell argument (not wrapped in an outer array).
-        midclt = self._host.midclt_cmd
-        filters = f'[["username", "=", "{HOMEPILOT_USER}"]]'
-        query_out, _, query_code = self._run(f"{midclt} user.query '{filters}'")
-        if query_code != 0:
-            raise RuntimeError(f"midclt user.query failed: {query_out}")
-        try:
-            users = json.loads(query_out)
-            if not users:
-                raise ValueError(f"no user named '{HOMEPILOT_USER}' found")
-            truenas_id = users[0].get("id")
-            if truenas_id is None:
-                raise ValueError("no 'id' in response")
-        except (json.JSONDecodeError, ValueError) as exc:
-            raise RuntimeError(
-                f"Failed to parse midclt user.query response: {query_out[:200]}"
-            ) from exc
+        # Look up homepilot's TrueNAS user ID
+        truenas_id = self._get_homepilot_id()
 
-        # Ensure homepilot has a writable home (needed for sshpubkey to write authorized_keys).
-        # If user was created with /var/empty, migrate to the pool root dataset first.
-        users = json.loads(query_out)
-        current_home = users[0].get("home", "")
+        # If user still has /var/empty home, update it to a writable ZFS dataset first
+        hp_query_out, _, _ = self._run(
+            f'{midclt} user.query \'[["username", "=", "{HOMEPILOT_USER}"]]\''
+        )
+        try:
+            hp_users = json.loads(hp_query_out)
+            current_home = hp_users[0].get("home", "") if hp_users else ""
+        except (json.JSONDecodeError, IndexError):
+            current_home = ""
+
         if not current_home or current_home == "/var/empty":
-            pool_root = self._home_dataset_path()
-            home_payload = json.dumps({"home": pool_root, "home_create": True})
+            home_parent = self._find_home_parent()
+            home_payload = json.dumps({"home": home_parent, "home_create": True})
             _, home_err, home_code = self._run(
                 f"{midclt} user.update '{truenas_id}' '{home_payload}'"
             )
             if home_code != 0:
                 raise RuntimeError(f"midclt user.update (home) failed: {home_err}")
 
-        # Update the user with the SSH public key.
-        # midclt call user.update takes two separate positional args: id and data dict.
-        data_payload = json.dumps({"sshpubkey": first_key})
-        _, err, code = self._run(f"{midclt} user.update '{truenas_id}' '{data_payload}'")
+        # Set the SSH public key — TrueNAS writes it to ~/.ssh/authorized_keys
+        key_payload = json.dumps({"sshpubkey": first_key})
+        _, err, code = self._run(f"{midclt} user.update '{truenas_id}' '{key_payload}'")
         if code != 0:
             raise RuntimeError(f"midclt user.update (sshpubkey) failed: {err}")
 
-        return f"SSH key authorised for '{HOMEPILOT_USER}' (TrueNAS id: {truenas_id})"
+        return f"SSH key authorised for '{HOMEPILOT_USER}' (id: {truenas_id})"
 
-    def _step_setup_sudoers(self) -> str:
-        # Find the docker binary path
-        docker_path_out, _, code = self._run("which docker || command -v docker")
+    def _step_setup_sudo(self) -> str:
+        import json
+        # TrueNAS manages sudo internally via middleware — do NOT write to /etc/sudoers.d
+        # (it is not included by /etc/sudoers on TrueNAS SCALE).
+        # Use sudo_commands_nopasswd field in user.update instead.
+        docker_path_out, _, _ = self._run("which docker 2>/dev/null || echo /usr/bin/docker")
         docker_path = docker_path_out.strip() or "/usr/bin/docker"
 
-        sudoers_line = f"{HOMEPILOT_USER} ALL=(ALL) NOPASSWD: {docker_path}"
-        sudoers_file = "/etc/sudoers.d/homepilot"
-
-        # Write the sudoers drop-in (chmod 440 required for sudo to accept it)
-        escaped = sudoers_line.replace("'", "'\"'\"'")
-        _, err, code = self._run(
-            f"printf '%s\\n' '{escaped}' > {sudoers_file} && chmod 440 {sudoers_file}"
-        )
+        truenas_id = self._get_homepilot_id()
+        payload = json.dumps({"sudo_commands_nopasswd": [docker_path]})
+        _, err, code = self._run(f"{self._host.midclt_cmd} user.update '{truenas_id}' '{payload}'")
         if code != 0:
-            raise RuntimeError(f"Failed to write {sudoers_file}: {err}")
-
-        # Validate with visudo -c
-        _, err, code = self._run(f"visudo -c -f {sudoers_file}")
-        if code != 0:
-            self._run(f"rm -f {sudoers_file}")
-            raise RuntimeError(f"sudoers syntax check failed: {err}")
-
-        return f"Wrote {sudoers_file}: {HOMEPILOT_USER} may sudo {docker_path} without password"
+            raise RuntimeError(f"midclt user.update (sudo_commands_nopasswd) failed: {err}")
+        return f"'{HOMEPILOT_USER}' may run {docker_path} without password (via TrueNAS middleware)"
 
     def _step_setup_dirs(self) -> str:
-        _, err, code = self._run(f"mkdir -p {TRUENAS_HOMEPILOT_DIR}")
+        state_dir = self._state_dir()
+        _, err, code = self._run(f"sudo mkdir -p {state_dir}")
         if code != 0:
-            raise RuntimeError(f"mkdir failed for {TRUENAS_HOMEPILOT_DIR}: {err}")
-        self._run(f"chown {HOMEPILOT_USER} {TRUENAS_HOMEPILOT_DIR}")
-        return f"Created {TRUENAS_HOMEPILOT_DIR}/, owned by {HOMEPILOT_USER}"
+            raise RuntimeError(f"mkdir failed for {state_dir}: {err}")
+        self._run(f"sudo chown {HOMEPILOT_USER} {state_dir}")
+        return f"Created {state_dir}/, owned by {HOMEPILOT_USER}"
 
     def _step_write_state(self) -> str:
         from homepilot.services.remote_state import RemoteStateService
-        state_path = f"{TRUENAS_HOMEPILOT_DIR}/state.yaml"
+        state_path = f"{self._state_dir()}/state.yaml"
         state_svc = RemoteStateService(self._ssh, host_key=self._host.host, state_path=state_path)
         state = state_svc.read()
         state_svc.write(state)
@@ -595,14 +571,14 @@ class TrueNASBootstrapService:
         test_ssh = SSHService(test_server)
         try:
             test_ssh.connect()
-            # TrueNAS docker runs as sudo docker
             docker_cmd = self._host.docker_cmd
-            out, err, code = test_ssh.run_command(f"{docker_cmd} ps --format '{{{{.Names}}}}' 2>&1 | head -5")
+            out, err, code = test_ssh.run_command(
+                f"{docker_cmd} ps --format '{{{{.Names}}}}' 2>&1 | head -5"
+            )
             test_ssh.close()
             if code != 0:
                 raise RuntimeError(
-                    f"'{HOMEPILOT_USER}' connected via SSH but '{docker_cmd} ps' failed — "
-                    f"check sudoers configuration. Error: {err or out}"
+                    f"'{HOMEPILOT_USER}' connected but '{docker_cmd} ps' failed: {err or out}"
                 )
             containers = out.strip() or "(none running)"
             return f"'{HOMEPILOT_USER}' can SSH and run {docker_cmd}. Running: {containers}"
@@ -617,21 +593,55 @@ class TrueNASBootstrapService:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _home_dataset_path(self) -> str:
-        """Ensure a ZFS home dataset exists and return its mount path.
+    def _discover_pool_root(self) -> str:
+        """Query the first TrueNAS pool path via midclt pool.query."""
+        import json
+        out, _, code = self._run(f"{self._host.midclt_cmd} pool.query")
+        if code == 0:
+            try:
+                pools = json.loads(out)
+                if pools:
+                    return pools[0]["path"]  # e.g. /mnt/SixNine
+            except (json.JSONDecodeError, KeyError, IndexError):
+                pass
+        # Fallback: look for first /mnt/<name> mount
+        out2, _, _ = self._run("zfs list -H -o mountpoint | grep '^/mnt/' | head -1")
+        parts = out2.strip().split("/")
+        if len(parts) >= 3:
+            return f"/{parts[1]}/{parts[2]}"
+        return "/mnt/tank"
 
-        TrueNAS requires the home parent to be a child ZFS dataset (not the
-        pool root). Creates <pool>/home if it doesn't exist, e.g. tank/home
-        mounted at /mnt/tank/home.
+    def _find_home_parent(self) -> str:
+        """Return the best ZFS dataset path to use as home parent.
+
+        Checks for <pool>/Home, <pool>/home in order. Falls back to pool root.
         """
-        data_root = getattr(self._host, "data_root", "/mnt/tank/apps")
-        parts = data_root.rstrip("/").split("/")
-        pool_name = parts[2] if len(parts) >= 3 and parts[1] == "mnt" else "tank"
-        dataset = f"{pool_name}/home"
-        mount = f"/mnt/{pool_name}/home"
-        # Create dataset if it doesn't already exist
-        self._run(f"sudo zfs create {dataset} 2>/dev/null || sudo zfs list {dataset} > /dev/null")
-        return mount
+        pool = getattr(self, "_pool_root", None) or self._discover_pool_root()
+        for candidate in (f"{pool}/Home", f"{pool}/home"):
+            _, _, code = self._run(f"test -d {candidate}")
+            if code == 0:
+                return candidate
+        # Nothing suitable found — return pool root (TrueNAS may accept it)
+        return pool
+
+    def _get_homepilot_id(self) -> int:
+        import json
+        out, _, code = self._run(
+            f'{self._host.midclt_cmd} user.query \'[["username", "=", "{HOMEPILOT_USER}"]]\''
+        )
+        if code != 0:
+            raise RuntimeError(f"midclt user.query failed: {out}")
+        try:
+            users = json.loads(out)
+            if not users:
+                raise ValueError(f"user '{HOMEPILOT_USER}' not found")
+            return users[0]["id"]
+        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+            raise RuntimeError(f"Failed to parse user.query response: {out[:200]}") from exc
+
+    def _state_dir(self) -> str:
+        pool = getattr(self, "_pool_root", None) or self._discover_pool_root()
+        return f"{pool}/homepilot"
 
     def _run(self, cmd: str, timeout: float = 60) -> tuple[str, str, int]:
         assert self._ssh is not None

@@ -85,17 +85,29 @@ class TrueNASProvider:
         """SSH to the host and check whether HomePilot has been bootstrapped.
 
         Sets and returns self.bootstrap_status:
-          '✅ Bootstrapped'       — /mnt/tank/homepilot/state.yaml found
+          '✅ Bootstrapped'       — <pool>/homepilot/state.yaml found
           '⚠️  Run Bootstrap (h→b)' — SSH works but state.yaml missing
           '❌ SSH failed'         — could not connect
         """
-        from homepilot.services.bootstrap import TRUENAS_HOMEPILOT_DIR
-        state_path = f"{TRUENAS_HOMEPILOT_DIR}/state.yaml"
+        import json
         try:
             server_cfg = self._config.to_server_config()
             ssh = SSHService(server_cfg)
             ssh.connect()
             try:
+                # Discover actual pool root via midclt
+                pool_root = "/mnt/tank"
+                midclt = self._config.midclt_cmd
+                out, _, code = ssh.run_command(f"{midclt} pool.query", timeout=10)
+                if code == 0:
+                    try:
+                        pools = json.loads(out)
+                        if pools:
+                            pool_root = pools[0]["path"]
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        pass
+
+                state_path = f"{pool_root}/homepilot/state.yaml"
                 _, _, code = ssh.run_command(f"test -f {state_path}", timeout=10)
                 if code == 0:
                     self.bootstrap_status = "✅ Bootstrapped"
