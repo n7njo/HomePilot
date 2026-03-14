@@ -466,7 +466,9 @@ class TrueNASBootstrapService:
 
         # Use the same key HomePilot already uses to connect:
         # 1. If an ssh_key file is configured, derive the public key from it.
-        # 2. Otherwise, pull the first key from the local SSH agent.
+        # 2. Otherwise, scan ~/.ssh/*.pub (same files Paramiko auto-discovers).
+        from pathlib import Path
+
         first_key = None
         ssh_key_path = getattr(self._host, "ssh_key", "")
         if ssh_key_path:
@@ -478,20 +480,23 @@ class TrueNASBootstrapService:
                 first_key = result.stdout.strip().splitlines()[0].strip()
 
         if not first_key:
-            result = subprocess.run(
-                ["ssh-add", "-L"],
-                capture_output=True, text=True,
-            )
-            if result.returncode == 0:
-                for line in result.stdout.splitlines():
-                    if line.strip() and not line.startswith("#"):
-                        first_key = line.strip()
-                        break
+            ssh_dir = Path.home() / ".ssh"
+            for pub_file in sorted(ssh_dir.glob("*.pub")):
+                try:
+                    for line in pub_file.read_text().splitlines():
+                        if line.strip() and not line.startswith("#"):
+                            first_key = line.strip()
+                            break
+                except OSError:
+                    continue
+                if first_key:
+                    break
 
         if not first_key:
             raise RuntimeError(
-                "Could not determine SSH public key — ensure an ssh_key is configured "
-                "for this host or that ssh-agent is running with a key loaded."
+                "Could not find an SSH public key in ~/.ssh/*.pub — "
+                "ensure an ssh_key is configured for this host or that "
+                "a public key exists in ~/.ssh/."
             )
 
         # Look up the TrueNAS-internal user ID for homepilot
