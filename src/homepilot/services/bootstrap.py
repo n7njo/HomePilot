@@ -499,16 +499,18 @@ class TrueNASBootstrapService:
                 "a public key exists in ~/.ssh/."
             )
 
-        # Look up the TrueNAS-internal user ID for homepilot
+        # Look up the TrueNAS-internal user ID for homepilot.
+        # Pass the filter as a separate shell argument (not wrapped in an outer array).
         midclt = self._host.midclt_cmd
-        query_out, _, query_code = self._run(
-            f'{midclt} user.query \'[[[["username", "=", "{HOMEPILOT_USER}"]], {{"get": true}}]]\''
-        )
+        filters = f'[["username", "=", "{HOMEPILOT_USER}"]]'
+        query_out, _, query_code = self._run(f"{midclt} user.query '{filters}'")
         if query_code != 0:
             raise RuntimeError(f"midclt user.query failed: {query_out}")
         try:
-            user_data = json.loads(query_out)
-            truenas_id = user_data.get("id")
+            users = json.loads(query_out)
+            if not users:
+                raise ValueError(f"no user named '{HOMEPILOT_USER}' found")
+            truenas_id = users[0].get("id")
             if truenas_id is None:
                 raise ValueError("no 'id' in response")
         except (json.JSONDecodeError, ValueError) as exc:
