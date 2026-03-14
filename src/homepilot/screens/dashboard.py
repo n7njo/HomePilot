@@ -72,6 +72,7 @@ class DashboardScreen(Screen):
         Binding("s", "stop_start_selected", "Stop/Start", show=True, priority=True),
         Binding("i", "import_config", "Import Config", show=True, priority=True),
         Binding("a", "add_resource", "Add", show=True, priority=True),
+        Binding("x", "delete_app", "Delete", show=True, priority=True),
         Binding("h", "manage_hosts", "Servers", show=True, priority=True),
         Binding("r", "refresh_status", "Refresh", show=True, priority=True),
         Binding("enter", "view_detail", "Detail", show=True, priority=True),
@@ -389,6 +390,14 @@ class DashboardScreen(Screen):
     def action_add_resource(self) -> None:
         from homepilot.screens.add_resource import AddResourceScreen
         self.app.push_screen(AddResourceScreen(self._config, self._registry))
+
+    def action_delete_app(self) -> None:
+        name = self._get_selected_app_name()
+        if name:
+            from homepilot.screens.delete_app import DeleteAppScreen
+            self.app.push_screen(DeleteAppScreen(self._config, self._registry, name))
+        else:
+            self.notify("Select a HomePilot-managed app to delete.", severity="warning", timeout=3)
 
     def action_manage_hosts(self) -> None:
         from homepilot.screens.host_manager import HostManagerScreen

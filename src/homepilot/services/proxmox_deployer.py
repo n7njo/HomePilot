@@ -118,6 +118,7 @@ class ProxmoxDeployer:
             DeployStep("stop_app", "Stop and remove existing container"),
             DeployStep("start_app", "Start container"),
             DeployStep("verify_health", "Verify container is running"),
+            DeployStep("record_state", "Record deployment in remote state"),
         ]
 
     def _execute_step(self, name: str) -> str:
@@ -128,6 +129,7 @@ class ProxmoxDeployer:
             "stop_app": self._step_stop_app,
             "start_app": self._step_start_app,
             "verify_health": self._step_verify_health,
+            "record_state": self._step_record_state,
         }.get(name)
         if handler is None:
             raise RuntimeError(f"Unknown step: {name}")
@@ -231,7 +233,15 @@ class ProxmoxDeployer:
             parts += ["-p", f"{app.deploy.host_port}:{app.deploy.container_port}"]
 
         for vol in app.volumes:
-            self._run(f"mkdir -p {vol.host}")
+            # Try to create the volume directory; fall back to sudo if needed
+            _, _, rc = self._run(f"mkdir -p {vol.host}")
+            if rc != 0:
+                _, err, rc2 = self._run(f"sudo mkdir -p {vol.host} && sudo chown $(id -u):$(id -g) {vol.host}")
+                if rc2 != 0:
+                    raise RuntimeError(
+                        f"Cannot create volume directory {vol.host}. "
+                        f"Pre-create it on the host and set ownership to {self._host.ssh_user}."
+                    )
             vol_str = f"{vol.host}:{vol.container}"
             if vol.mode:
                 vol_str += f":{vol.mode}"
@@ -251,6 +261,12 @@ class ProxmoxDeployer:
             raise RuntimeError(f"docker run failed: {err.strip()}")
 
         return f"Container started: {out.strip()[:12]}"
+
+    def _step_record_state(self) -> str:
+        from homepilot.services.remote_state import RemoteStateService
+        state_svc = RemoteStateService(self._ssh, host_key=self._host.host)
+        state_svc.record_deploy(self._app)
+        return "Deployment recorded in /opt/homepilot/state.yaml"
 
     def _step_verify_health(self) -> str:
         container = self._app.deploy.container_name

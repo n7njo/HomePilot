@@ -22,6 +22,7 @@ class HostManagerScreen(Screen):
         Binding("e", "edit_host", "Edit", show=True),
         Binding("d", "delete_host", "Delete", show=True),
         Binding("t", "test_connection", "Test", show=True),
+        Binding("b", "bootstrap_host", "Bootstrap", show=True),
         Binding("escape", "go_back", "Back", show=True),
     ]
 
@@ -131,6 +132,13 @@ class HostManagerScreen(Screen):
         except Exception as exc:
             msg = f"[red]❌ '{key}' failed: {exc}[/red]"
         self.app.call_from_thread(status.update, msg)
+
+    def action_bootstrap_host(self) -> None:
+        key = self._selected_key()
+        if not key:
+            return
+        from homepilot.screens.bootstrap import BootstrapScreen
+        self.app.push_screen(BootstrapScreen(self._config, self._registry, key))
 
     def action_go_back(self) -> None:
         self.app.pop_screen()
