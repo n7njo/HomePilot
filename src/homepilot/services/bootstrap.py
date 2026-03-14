@@ -553,11 +553,32 @@ class TrueNASBootstrapService:
         return f"Created {state_dir}/, owned by {HOMEPILOT_USER}"
 
     def _step_write_state(self) -> str:
-        from homepilot.services.remote_state import RemoteStateService
+        import yaml
+        from datetime import datetime, timezone
         state_path = f"{self._state_dir()}/state.yaml"
-        state_svc = RemoteStateService(self._ssh, host_key=self._host.host, state_path=state_path)
-        state = state_svc.read()
-        state_svc.write(state)
+
+        # Read existing state if present, otherwise start fresh
+        existing_out, _, _ = self._run(f"sudo cat {state_path} 2>/dev/null")
+        try:
+            state = yaml.safe_load(existing_out) or {}
+            if not isinstance(state, dict):
+                state = {}
+        except Exception:
+            state = {}
+        state.setdefault("version", 1)
+        state.setdefault("host_key", self._host.host)
+        state.setdefault("managed_apps", {})
+        state["last_updated"] = datetime.now(timezone.utc).isoformat()
+
+        raw = yaml.dump(state, default_flow_style=False, allow_unicode=True)
+        escaped = raw.replace("'", "'\"'\"'")
+        # Use sudo tee — the state dir is owned by homepilot so neil can't write directly
+        _, err, code = self._run(
+            f"printf '%s' '{escaped}' | sudo tee {state_path} > /dev/null"
+        )
+        if code != 0:
+            raise RuntimeError(f"Failed to write {state_path}: {err}")
+        self._run(f"sudo chown {HOMEPILOT_USER} {state_path}")
         return f"State file written to {self._host.host}:{state_path}"
 
     def _step_verify(self) -> str:
