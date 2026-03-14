@@ -435,16 +435,19 @@ class TrueNASBootstrapService:
 
     def _step_create_user(self) -> str:
         import json
+        import secrets
         # Check if user already exists (Unix level)
         _, _, code = self._run(f"id {HOMEPILOT_USER}")
         if code == 0:
             raise _SkipStep(f"User '{HOMEPILOT_USER}' already exists")
 
         midclt = self._host.midclt_cmd
+        # TrueNAS requires a non-empty password string even when password_disabled=true
+        dummy_password = secrets.token_urlsafe(32)
         payload = json.dumps({
             "username": HOMEPILOT_USER,
             "full_name": "HomePilot Management",
-            "password": "",
+            "password": dummy_password,
             "password_disabled": True,
             "shell": "/usr/bin/bash",
             "home": f"/home/{HOMEPILOT_USER}",
