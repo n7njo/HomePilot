@@ -447,7 +447,7 @@ class TrueNASBootstrapService:
         # home is the *parent* ZFS dataset — TrueNAS creates a new dataset home/<username>.
         # Must be an existing ZFS dataset; the pool root /mnt/tank always qualifies.
         # home_create=true tells TrueNAS to create the tank/homepilot sub-dataset.
-        pool_root = self._pool_root()
+        pool_root = self._home_dataset_path()
         payload = json.dumps({
             "username": HOMEPILOT_USER,
             "full_name": "HomePilot Management",
@@ -528,7 +528,7 @@ class TrueNASBootstrapService:
         users = json.loads(query_out)
         current_home = users[0].get("home", "")
         if not current_home or current_home == "/var/empty":
-            pool_root = self._pool_root()
+            pool_root = self._home_dataset_path()
             home_payload = json.dumps({"home": pool_root, "home_create": True})
             _, home_err, home_code = self._run(
                 f"{midclt} user.update '{truenas_id}' '{home_payload}'"
@@ -617,16 +617,21 @@ class TrueNASBootstrapService:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _pool_root(self) -> str:
-        """Return the ZFS pool mount root, e.g. '/mnt/tank' from data_root '/mnt/tank/apps'."""
-        import os
+    def _home_dataset_path(self) -> str:
+        """Ensure a ZFS home dataset exists and return its mount path.
+
+        TrueNAS requires the home parent to be a child ZFS dataset (not the
+        pool root). Creates <pool>/home if it doesn't exist, e.g. tank/home
+        mounted at /mnt/tank/home.
+        """
         data_root = getattr(self._host, "data_root", "/mnt/tank/apps")
-        # Walk up from data_root until we reach /mnt/<pool>
         parts = data_root.rstrip("/").split("/")
-        # /mnt/<pool> is always depth 2 (["", "mnt", "pool"])
-        if len(parts) >= 3 and parts[1] == "mnt":
-            return f"/mnt/{parts[2]}"
-        return "/mnt/tank"  # safe fallback
+        pool_name = parts[2] if len(parts) >= 3 and parts[1] == "mnt" else "tank"
+        dataset = f"{pool_name}/home"
+        mount = f"/mnt/{pool_name}/home"
+        # Create dataset if it doesn't already exist
+        self._run(f"sudo zfs create {dataset} 2>/dev/null || sudo zfs list {dataset} > /dev/null")
+        return mount
 
     def _run(self, cmd: str, timeout: float = 60) -> tuple[str, str, int]:
         assert self._ssh is not None
