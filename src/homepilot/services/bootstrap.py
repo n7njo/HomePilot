@@ -444,13 +444,17 @@ class TrueNASBootstrapService:
         # TrueNAS rules:
         # - password_disabled=true requires the 'password' field to be omitted entirely
         # - home must start with /mnt or be /var/empty (homepilot is a service account)
+        # home is the *parent* directory — TrueNAS creates home/<username> inside it.
+        # The parent must already exist; /mnt/tank/home is a safe conventional location.
+        self._run("mkdir -p /mnt/tank/home")
         payload = json.dumps({
             "username": HOMEPILOT_USER,
             "full_name": "HomePilot Management",
             "password_disabled": True,
             "smb": False,  # must be False to allow password_disabled when SMB is enabled
             "shell": "/usr/bin/bash",
-            "home": "/var/empty",
+            "home": "/mnt/tank/home",
+            "home_create": True,
             "group_create": True,
         })
         # Single-quote the JSON payload — safe as JSON values contain no single quotes here
@@ -517,6 +521,19 @@ class TrueNASBootstrapService:
             raise RuntimeError(
                 f"Failed to parse midclt user.query response: {query_out[:200]}"
             ) from exc
+
+        # Ensure homepilot has a writable home (needed for sshpubkey to write authorized_keys).
+        # If user was created with /var/empty, migrate to /mnt/tank/home first.
+        users = json.loads(query_out)
+        current_home = users[0].get("home", "")
+        if not current_home or current_home == "/var/empty":
+            self._run("mkdir -p /mnt/tank/home")
+            home_payload = json.dumps({"home": "/mnt/tank/home", "home_create": True})
+            _, home_err, home_code = self._run(
+                f"{midclt} user.update '{truenas_id}' '{home_payload}'"
+            )
+            if home_code != 0:
+                raise RuntimeError(f"midclt user.update (home) failed: {home_err}")
 
         # Update the user with the SSH public key.
         # midclt call user.update takes two separate positional args: id and data dict.
