@@ -122,6 +122,7 @@ class DashboardScreen(Screen):
         table.cursor_type = "row"
         for col in COLUMNS:
             table.add_column(col, key=col.lower())
+        table.focus()
 
         # Server table
         srv = self.query_one("#server-table", DataTable)

@@ -238,9 +238,11 @@ class TrueNASProvider:
 
     def start(self, resource_id: str) -> bool:
         truenas = self._ensure_connected()
-        # Try TrueNAS app first, fall back to docker start
-        if truenas.app_exists(resource_id):
-            return truenas.app_start(resource_id)
+        # Only use TrueNAS app path when midclt is working (not UNKNOWN/NOT_FOUND)
+        status = truenas.app_status(resource_id)
+        if status not in ("NOT_FOUND", "UNKNOWN"):
+            ok, _ = truenas.app_start(resource_id)
+            return ok
         _, _, code = self._ssh.run_command(  # type: ignore[union-attr]
             f"{self._config.docker_cmd} start {resource_id}"
         )
@@ -248,7 +250,8 @@ class TrueNASProvider:
 
     def stop(self, resource_id: str) -> bool:
         truenas = self._ensure_connected()
-        if truenas.app_exists(resource_id):
+        status = truenas.app_status(resource_id)
+        if status not in ("NOT_FOUND", "UNKNOWN"):
             return truenas.app_stop(resource_id)
         return truenas.stop_container(resource_id)
 
