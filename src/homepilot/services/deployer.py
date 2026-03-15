@@ -265,21 +265,21 @@ class Deployer:
         assert self._truenas is not None
         app_name = self._app.name
 
-        # Try TrueNAS Custom App stop first.
-        if self._truenas.app_exists(app_name):
-            status = self._truenas.app_status(app_name)
+        # Try TrueNAS Custom App stop only when midclt is working (not UNKNOWN).
+        status = self._truenas.app_status(app_name)
+        if status not in ("NOT_FOUND", "UNKNOWN"):
             if status == "RUNNING":
                 self._truenas.app_stop(app_name)
                 time.sleep(5)
                 return f"TrueNAS app '{app_name}' stopped"
-            return f"App was already {status}"
+            return f"TrueNAS app was already {status}"
 
-        # Fall back to direct container stop.
+        # Fall back to direct container stop (also covers UNKNOWN / midclt unavailable).
         container = self._app.deploy.container_name
         if self._truenas.container_exists(container):
             self._truenas.stop_container(container)
             self._truenas.remove_container(container)
-            return f"Container {container} stopped and removed"
+            return f"Container '{container}' stopped and removed"
 
         raise _SkipStep("No existing app/container found")
 
