@@ -6,10 +6,9 @@ from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import (
-    Button,
     Footer,
     Header,
     Input,
@@ -38,36 +37,39 @@ class AddResourceScreen(Screen):
     """Wizard to register a new application or resource."""
 
     BINDINGS = [
+        Binding("ctrl+s", "save", "Save", show=True),
+        Binding("ctrl+d", "auto_detect", "Auto-Detect", show=True),
         Binding("escape", "go_back", "Back", show=True),
     ]
 
-    def __init__(self, config: HomePilotConfig, registry: ProviderRegistry) -> None:
+    def __init__(
+        self,
+        config: HomePilotConfig,
+        registry: ProviderRegistry,
+        prefill: dict | None = None,
+    ) -> None:
         super().__init__()
         self._config = config
         self._registry = registry
+        self._prefill: dict = prefill or {}
 
     def compose(self) -> ComposeResult:
+        p = self._prefill
         host_options = [(k, k) for k in self._config.hosts]
-        default_host = next(iter(self._config.hosts), "")
+        default_host = p.get("host") or next(iter(self._config.hosts), "")
 
         yield Header()
         yield VerticalScroll(
-            Label("\n  ➕ Add New Resource\n", id="wizard-title"),
+            Label("\n  Add New Resource\n", id="wizard-title"),
+            Static("", id="wizard-status"),
 
-            # Step 0: Host selection
             Label("  Target Host:"),
-            Select(
-                host_options,
-                value=default_host,
-                id="host-select",
-            ),
+            Select(host_options, value=default_host, id="host-select"),
 
-            # Step 1: Name
             Label("\n  Resource Name (lowercase, dashes allowed):"),
-            Input(id="app-name", placeholder="my-app"),
+            Input(value=p.get("app_name", ""), id="app-name", placeholder="my-app"),
 
-            # ---- TrueNAS Docker fields ----
-            Label("\n  Source:", id="lbl-source"),
+            Label("\n  Source:"),
             Label("  Source Type:"),
             Select(
                 [(t.value, t.value) for t in SourceType],
@@ -89,9 +91,9 @@ class AddResourceScreen(Screen):
 
             Label("\n  Deployment:"),
             Label("  Image Name:"),
-            Input(id="image-name", placeholder="my-app"),
+            Input(value=p.get("image_name", ""), id="image-name", placeholder="my-app"),
             Label("  Container Name:"),
-            Input(id="container-name", placeholder="my-app-container"),
+            Input(value=p.get("container_name", ""), id="container-name", placeholder="my-app-container"),
             Label("  Host Port (0 = dynamic):"),
             Input(value="0", id="host-port"),
             Label("  Container Port:"),
@@ -113,40 +115,19 @@ class AddResourceScreen(Screen):
             Label("  Container Path:"),
             Input(value="/app/data", id="vol-container"),
 
-            # Auto-detect
             Static("", id="detect-status"),
-
-            # Buttons
-            Static(""),
-            Horizontal(
-                Button("🔍 Auto-Detect", id="btn-detect", variant="default"),
-                Button("💾 Save", id="btn-save", variant="success"),
-                Button("Cancel", id="btn-cancel", variant="default"),
-                id="wizard-buttons",
-            ),
-            Static("", id="wizard-status"),
             id="wizard-body",
         )
         yield Footer()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-detect":
-            self._auto_detect()
-        elif event.button.id == "btn-save":
-            self._save()
-        elif event.button.id == "btn-cancel":
-            self.app.pop_screen()
 
     def _get_selected_host(self) -> str:
         return str(self.query_one("#host-select", Select).value)
 
     def _is_truenas_host(self) -> bool:
-        host_key = self._get_selected_host()
-        host_cfg = self._config.hosts.get(host_key)
+        host_cfg = self._config.hosts.get(self._get_selected_host())
         return isinstance(host_cfg, TrueNASHostConfig)
 
-    def _auto_detect(self) -> None:
-        """Try to auto-detect settings from the local source path."""
+    def action_auto_detect(self) -> None:
         status = self.query_one("#detect-status", Static)
 
         if not self._is_truenas_host():
@@ -174,7 +155,7 @@ class AddResourceScreen(Screen):
         name_input = self.query_one("#app-name", Input)
         if not name_input.value:
             name_input.value = name
-            messages.append(f"📝 Name: {name}")
+            messages.append(f"Name: {name}")
 
         image_input = self.query_one("#image-name", Input)
         if not image_input.value:
@@ -185,11 +166,11 @@ class AddResourceScreen(Screen):
             container_input.value = f"{name}-app"
 
         if (src / "package.json").exists():
-            messages.append("📦 Node.js project detected")
+            messages.append("Node.js project detected")
 
         for compose_name in ("docker-compose.yml", "docker-compose.yaml", "compose.yaml"):
             if (src / compose_name).exists():
-                messages.append(f"🐳 {compose_name} found")
+                messages.append(f"{compose_name} found")
 
         vol_host = self.query_one("#vol-host", Input)
         if not vol_host.value:
@@ -197,8 +178,7 @@ class AddResourceScreen(Screen):
 
         status.update("[green]" + " │ ".join(messages) + "[/green]")
 
-    def _save(self) -> None:
-        """Create the new resource config and save."""
+    def action_save(self) -> None:
         status = self.query_one("#wizard-status", Static)
         host_key = self._get_selected_host()
 
@@ -206,7 +186,6 @@ class AddResourceScreen(Screen):
         if not name:
             status.update("[red]Name is required[/red]")
             return
-
         if name in self._config.apps:
             status.update(f"[red]'{name}' already exists[/red]")
             return
@@ -257,7 +236,7 @@ class AddResourceScreen(Screen):
                 return
 
             save_config(self._config)
-            status.update(f"[green]✅ '{name}' added to {host_key}![/green]")
+            status.update(f"[green]✅ '{name}' added to {host_key}[/green]")
 
         except Exception as exc:
             status.update(f"[red]Error: {exc}[/red]")

@@ -95,16 +95,6 @@ class HomePilotApp(App):
         margin: 0 0 1 0;
     }
 
-    /* Actions panel */
-    #actions-panel {
-        padding: 1 2;
-    }
-
-    #actions-panel Button {
-        margin: 0 0 1 0;
-        width: 40;
-    }
-
     /* Add resource wizard */
     #wizard-body {
         padding: 1 2;
@@ -115,18 +105,14 @@ class HomePilotApp(App):
         margin: 0 0 1 0;
     }
 
-    #wizard-buttons {
-        dock: bottom;
-        height: auto;
-        padding: 1 2;
-    }
     """
 
     def __init__(self) -> None:
         super().__init__()
         self._config = load_config()
         self.providers = ProviderRegistry(self._config)
-        self.dark = self._config.theme != "light"
+        _LEGACY_THEMES = {"dark": "textual-dark", "light": "textual-light"}
+        self.theme = _LEGACY_THEMES.get(self._config.theme, self._config.theme)
 
     @property
     def config(self) -> HomePilotConfig:
@@ -139,8 +125,14 @@ class HomePilotApp(App):
         self.providers.disconnect_all()
 
     def action_toggle_theme(self) -> None:
-        """Toggle between dark and light themes."""
-        self.dark = not self.dark
-        if self._config is not None:
-            self._config.theme = "dark" if self.dark else "light"
-            save_config(self._config)
+        """Open theme picker."""
+        from homepilot.screens.theme_picker import ThemePickerScreen
+
+        def _apply(theme: str | None) -> None:
+            if theme:
+                self.theme = theme
+                if self._config is not None:
+                    self._config.theme = theme
+                    save_config(self._config)
+
+        self.push_screen(ThemePickerScreen(), _apply)

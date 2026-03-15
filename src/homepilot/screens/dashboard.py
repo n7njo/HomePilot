@@ -72,6 +72,7 @@ class DashboardScreen(Screen):
         Binding("s", "stop_start_selected", "Stop/Start", show=True, priority=True),
         Binding("i", "import_config", "Import Config", show=True, priority=True),
         Binding("a", "add_resource", "Add", show=True, priority=True),
+        Binding("n", "registry_deploy", "Registry", show=True, priority=True),
         Binding("x", "delete_app", "Delete", show=True, priority=True),
         Binding("h", "manage_hosts", "Servers", show=True, priority=True),
         Binding("r", "refresh_status", "Refresh", show=True, priority=True),
@@ -447,6 +448,10 @@ class DashboardScreen(Screen):
     def action_add_resource(self) -> None:
         from homepilot.screens.add_resource import AddResourceScreen
         self.app.push_screen(AddResourceScreen(self._config, self._registry))
+
+    def action_registry_deploy(self) -> None:
+        from homepilot.screens.registry_browser import RegistryBrowserScreen
+        self.app.push_screen(RegistryBrowserScreen(self._config, self._registry))
 
     def action_delete_app(self) -> None:
         name = self._get_selected_app_name()
