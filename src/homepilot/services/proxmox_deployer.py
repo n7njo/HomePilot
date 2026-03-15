@@ -233,15 +233,6 @@ class ProxmoxDeployer:
             parts += ["-p", f"{app.deploy.host_port}:{app.deploy.container_port}"]
 
         for vol in app.volumes:
-            # Try to create the volume directory; fall back to sudo if needed
-            _, _, rc = self._run(f"mkdir -p {vol.host}")
-            if rc != 0:
-                _, err, rc2 = self._run(f"sudo mkdir -p {vol.host} && sudo chown $(id -u):$(id -g) {vol.host}")
-                if rc2 != 0:
-                    raise RuntimeError(
-                        f"Cannot create volume directory {vol.host}. "
-                        f"Pre-create it on the host and set ownership to {self._host.ssh_user}."
-                    )
             vol_str = f"{vol.host}:{vol.container}"
             if vol.mode:
                 vol_str += f":{vol.mode}"
