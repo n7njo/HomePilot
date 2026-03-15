@@ -345,13 +345,24 @@ class DashboardScreen(Screen):
 
     def _get_selected_app_name(self) -> str | None:
         r = self._get_selected_resource()
-        if r is None:
+        if r is not None:
+            if r.name in self._config.apps:
+                return r.name
+            for app_key, app_cfg in self._config.apps.items():
+                if app_cfg.deploy.container_name == r.name:
+                    return app_key
             return None
-        if r.name in self._config.apps:
-            return r.name
-        for app_key, app_cfg in self._config.apps.items():
-            if app_cfg.deploy.container_name == r.name:
-                return app_key
+
+        # No live resource — check if the selected row is an undeployed config app
+        table = self.query_one("#resource-table", DataTable)
+        try:
+            row_data = table.get_row_at(table.cursor_row)
+            if row_data:
+                name = str(row_data[1])
+                if name in self._config.apps:
+                    return name
+        except Exception:
+            pass
         return None
 
     # ------------------------------------------------------------------
