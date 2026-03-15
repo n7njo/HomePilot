@@ -136,6 +136,7 @@ class ProxmoxHostConfig(HostConfig):
             host=self.host,
             user=self.ssh_user,
             ssh_key=self.ssh_key,
+            docker_cmd="docker",  # Proxmox: homepilot is in docker group, no sudo needed
         )
 
 
