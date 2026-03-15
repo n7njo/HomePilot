@@ -293,6 +293,24 @@ class TrueNASService:
                 return port
         return None
 
+    def get_container_port(self, container_name: str, container_port: int) -> int | None:
+        """Return the host port Docker assigned for a given container port.
+
+        Uses ``docker port <name> <container_port>`` which returns e.g.
+        ``0.0.0.0:32768`` or ``:::32768``.  Returns None if not found.
+        """
+        out, _, code = self._ssh.run_command(
+            f"{self._docker} port {container_name} {container_port}"
+        )
+        if code != 0 or not out.strip():
+            return None
+        # Output format: "0.0.0.0:32768" or ":::32768"
+        for line in out.strip().splitlines():
+            parts = line.rsplit(":", 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                return int(parts[1])
+        return None
+
     # ------------------------------------------------------------------
     # Cleanup
     # ------------------------------------------------------------------

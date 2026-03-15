@@ -332,7 +332,18 @@ class Deployer:
         ok, err = self._truenas.run_container(self._app, self._line_cb)
         if not ok:
             raise RuntimeError(f"Failed to start container '{container}': {err}" if err else f"Failed to start container '{container}'")
-        time.sleep(5)
+        time.sleep(2)
+
+        # Discover the actual host port Docker assigned (for dynamic/0 ports).
+        if self._app.deploy.port_mode == PortMode.DYNAMIC or self._app.deploy.host_port == 0:
+            assigned = self._truenas.get_container_port(
+                container, self._app.deploy.container_port
+            )
+            if assigned:
+                self._app.deploy.host_port = assigned
+                if self._line_cb:
+                    self._line_cb(f"Host port assigned: {assigned}")
+
         return f"Container '{container}' started via docker run"
 
     def _step_verify_health(self) -> str:
@@ -341,12 +352,10 @@ class Deployer:
         host = self._server.host
         port = self._app.deploy.host_port
 
-        # Handle dynamic port assignment.
-        if self._app.deploy.port_mode == PortMode.DYNAMIC and port == 0:
-            assert self._truenas is not None
-            assigned = self._truenas.find_available_port(
-                self._server.dynamic_port_range_start,
-                self._server.dynamic_port_range_end,
+        # If port is still 0, ask Docker what it actually assigned.
+        if port == 0 and self._truenas is not None:
+            assigned = self._truenas.get_container_port(
+                self._app.deploy.container_name, self._app.deploy.container_port
             )
             if assigned:
                 port = assigned
