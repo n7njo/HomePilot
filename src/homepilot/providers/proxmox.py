@@ -178,7 +178,7 @@ class ProxmoxProvider:
                 provider_name=self._host_key,
                 status=self._pve_status_to_resource(status_str),
                 host=self._config.host,
-                port=vmid,  # use VMID in the port column for display
+                port=vmid,
                 uptime=self._uptime_display(uptime),
                 metadata={
                     "node": node,
@@ -188,6 +188,59 @@ class ProxmoxProvider:
                     "maxcpu": item.get("maxcpu", 0),
                     "template": item.get("template", 0),
                 },
+            ))
+
+        resources.extend(self._list_docker_resources())
+        return resources
+
+    def _list_docker_resources(self) -> list[Resource]:
+        """List Docker containers running directly on the Proxmox host via SSH."""
+        import re
+        try:
+            from homepilot.services.ssh import SSHService
+            from homepilot.services.truenas import TrueNASService
+            server_cfg = self._config.to_server_config()
+            ssh = SSHService(server_cfg)
+            ssh.connect()
+            try:
+                svc = TrueNASService(ssh, server_cfg)
+                containers = svc.list_containers()
+            finally:
+                ssh.close()
+        except Exception as exc:
+            logger.debug("Docker SSH list failed for %s: %s", self._host_key, exc)
+            return []
+
+        resources: list[Resource] = []
+        for c in containers:
+            status_str = c.get("status", "").lower()
+            if "up" in status_str:
+                rs = ResourceStatus.RUNNING
+            elif "exited" in status_str or "created" in status_str:
+                rs = ResourceStatus.STOPPED
+            else:
+                rs = ResourceStatus.UNKNOWN
+
+            port = 0
+            m = re.search(r":(\d+)->", c.get("ports", ""))
+            if m:
+                port = int(m.group(1))
+
+            uptime = ""
+            up_match = re.match(r"Up\s+(.+)", c.get("status", ""), re.IGNORECASE)
+            if up_match:
+                uptime = up_match.group(1).strip()
+
+            resources.append(Resource(
+                id=c.get("name", ""),
+                name=c.get("name", ""),
+                resource_type=ResourceType.DOCKER_CONTAINER,
+                provider_name=self._host_key,
+                status=rs,
+                host=self._config.host,
+                port=port,
+                image=c.get("image", ""),
+                uptime=uptime,
             ))
 
         return resources
