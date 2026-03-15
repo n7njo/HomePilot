@@ -37,15 +37,19 @@ class TrueNASService:
         logger.info("Image loaded: %s", out.strip())
         return True
 
-    def pull_image(self, image: str) -> bool:
+    def pull_image(self, image: str, line_callback=None) -> bool:
         """Pull a Docker image from a registry on the server."""
-        out, err, code = self._ssh.run_command(
-            f"{self._docker} pull {image}", timeout=300
+        out, err, code = self._ssh.run_command_stream(
+            f"{self._docker} pull {image}",
+            line_callback=line_callback,
+            timeout=300,
         )
         if code != 0:
             logger.error("docker pull failed: %s", err)
+            if line_callback:
+                line_callback(f"docker pull error: {err.strip()}")
             return False
-        logger.info("Image pulled: %s", out.strip())
+        logger.info("Image pulled: %s", image)
         return True
 
     def image_exists(self, image_name: str) -> bool:
@@ -183,9 +187,13 @@ class TrueNASService:
         """Check if a TrueNAS Custom App is registered."""
         return self.app_status(app_name) != "NOT_FOUND"
 
-    def run_container(self, app: AppConfig) -> bool:
-        """Create and start a container directly via docker run."""
-        image = f"{app.deploy.image_name}:latest"
+    def run_container(self, app: AppConfig, line_callback=None) -> tuple[bool, str]:
+        """Create and start a container directly via docker run.
+
+        Returns (success, error_message).
+        """
+        raw_image = app.deploy.image_name
+        image = raw_image if ":" in raw_image else f"{raw_image}:latest"
         name = app.deploy.container_name
         port_map = f"{app.deploy.host_port}:{app.deploy.container_port}"
 
@@ -209,12 +217,18 @@ class TrueNASService:
 
         cmd = " ".join(parts)
         logger.info("Running container: %s", cmd)
+        if line_callback:
+            line_callback(f"$ {cmd}")
         out, err, code = self._ssh.run_command(cmd, timeout=60)
         if code != 0:
             logger.error("docker run failed: %s", err)
-            return False
+            if line_callback:
+                line_callback(f"docker run error: {err.strip()}")
+            return False, err.strip()
         logger.info("Container started: %s", out.strip()[:12])
-        return True
+        if line_callback:
+            line_callback(f"Container ID: {out.strip()[:12]}")
+        return True, ""
 
     # ------------------------------------------------------------------
     # Data backup

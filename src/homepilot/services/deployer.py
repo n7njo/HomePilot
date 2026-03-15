@@ -258,7 +258,7 @@ class Deployer:
         assert self._truenas is not None
         if self._is_image_only():
             image = self._app.deploy.image_name
-            ok = self._truenas.pull_image(image)
+            ok = self._truenas.pull_image(image, self._line_cb)
             if not ok:
                 raise RuntimeError(f"docker pull failed for {image}")
             return f"Pulled from registry: {image}"
@@ -329,9 +329,9 @@ class Deployer:
             self._truenas.stop_container(container)
             self._truenas.remove_container(container)
 
-        ok = self._truenas.run_container(self._app)
+        ok, err = self._truenas.run_container(self._app, self._line_cb)
         if not ok:
-            raise RuntimeError(f"Failed to start container '{container}'")
+            raise RuntimeError(f"Failed to start container '{container}': {err}" if err else f"Failed to start container '{container}'")
         time.sleep(5)
         return f"Container '{container}' started via docker run"
 
