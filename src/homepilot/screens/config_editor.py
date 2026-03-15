@@ -23,6 +23,47 @@ from homepilot.models import HomePilotConfig, PortMode, SourceType
 class ConfigEditorScreen(Screen):
     """Edit an app's configuration via a form."""
 
+    DEFAULT_CSS = """
+    ConfigEditorScreen #config-form {
+        padding: 0 2;
+    }
+    ConfigEditorScreen .section-header {
+        text-style: bold;
+        color: $accent;
+        padding: 1 0 0 0;
+    }
+    ConfigEditorScreen Label {
+        color: $text-muted;
+        padding: 1 0 0 0;
+    }
+    ConfigEditorScreen Input {
+        background: $surface;
+        border: tall $primary 40%;
+        color: $text;
+    }
+    ConfigEditorScreen Input:focus {
+        border: tall $primary;
+    }
+    ConfigEditorScreen Input.-invalid {
+        border: tall $error;
+    }
+    ConfigEditorScreen Select {
+        background: $surface;
+    }
+    ConfigEditorScreen TextArea {
+        background: $surface;
+        border: tall $primary 40%;
+        color: $text;
+        height: 6;
+    }
+    ConfigEditorScreen TextArea:focus {
+        border: tall $primary;
+    }
+    ConfigEditorScreen #config-status {
+        padding: 0 0 1 0;
+    }
+    """
+
     BINDINGS = [
         Binding("ctrl+s", "save", "Save", show=True),
         Binding("escape", "go_back", "Back", show=True),
@@ -45,17 +86,18 @@ class ConfigEditorScreen(Screen):
             Static("", id="config-status"),
 
             # Host assignment
-            Label("  Target Server:"),
+            Label("  Target Server:", classes="section-header"),
             Select(host_options, value=current_host, id="app-host"),
 
             # Source
-            Label("\n  Source Type:"),
+            Label("  Source", classes="section-header"),
+            Label("  Type:"),
             Select(
                 [(t.value, t.value) for t in SourceType],
                 value=app.source.type.value,
                 id="source-type",
             ),
-            Label("  Source Path (local):"),
+            Label("  Local Path:"),
             Input(value=app.source.path, id="source-path", placeholder="/path/to/project"),
             Label("  Git URL:"),
             Input(value=app.source.git_url, id="git-url", placeholder="https://github.com/..."),
@@ -63,14 +105,14 @@ class ConfigEditorScreen(Screen):
             Input(value=app.source.git_branch, id="git-branch", placeholder="main"),
 
             # Build
-            Label("\n  Build Settings:"),
+            Label("  Build", classes="section-header"),
             Label("  Dockerfile:"),
             Input(value=app.build.dockerfile, id="dockerfile", placeholder="Dockerfile"),
             Label("  Platform:"),
             Input(value=app.build.platform, id="platform", placeholder="linux/amd64"),
 
             # Deploy
-            Label("\n  Deployment:"),
+            Label("  Deployment", classes="section-header"),
             Label("  Image Name:"),
             Input(value=app.deploy.image_name, id="image-name"),
             Label("  Container Name:"),
@@ -89,7 +131,7 @@ class ConfigEditorScreen(Screen):
             ),
 
             # Health
-            Label("\n  Health Check:"),
+            Label("  Health Check", classes="section-header"),
             Label("  Endpoint:"),
             Input(value=app.health.endpoint, id="health-endpoint", placeholder="/api/health"),
             Label("  Expected Status:"),
@@ -98,7 +140,8 @@ class ConfigEditorScreen(Screen):
             Input(value=str(app.health.interval_seconds), id="health-interval"),
 
             # Volumes
-            Label("\n  Volumes (one host:container or host:container:mode per line):"),
+            Label("  Volumes", classes="section-header"),
+            Label("  One host:container or host:container:mode per line:"),
             TextArea(
                 "\n".join(
                     f"{v.host}:{v.container}" + (f":{v.mode}" if v.mode else "")
@@ -108,7 +151,8 @@ class ConfigEditorScreen(Screen):
             ),
 
             # Environment
-            Label("\n  Environment (one KEY=VALUE per line):"),
+            Label("  Environment Variables", classes="section-header"),
+            Label("  One KEY=VALUE per line:"),
             TextArea(
                 "\n".join(f"{k}={v}" for k, v in app.env.items()),
                 id="env-vars",
