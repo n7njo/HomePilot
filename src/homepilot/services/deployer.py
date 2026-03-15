@@ -321,6 +321,16 @@ class Deployer:
                     f"Failed to start TrueNAS app '{app_name}': {err or 'unknown error'}"
                 )
             time.sleep(5)
+            # Discover and save the host port even when using TrueNAS app management.
+            if self._app.deploy.host_port == 0:
+                container = self._app.deploy.container_name
+                assigned = self._truenas.get_container_port(
+                    container, self._app.deploy.container_port
+                )
+                if assigned:
+                    self._app.deploy.host_port = assigned
+                    if self._line_cb:
+                        self._line_cb(f"Host port assigned: {assigned}")
             return f"TrueNAS app '{app_name}' started"
 
         # Fall back to direct docker run for new apps or when midclt is unavailable.
