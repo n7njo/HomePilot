@@ -192,6 +192,8 @@ class DashboardScreen(Screen):
                 try:
                     app_cfg = self._config.apps.get(r.name)
                     endpoint = app_cfg.health.endpoint if app_cfg else "/api/health"
+                    if not endpoint:
+                        continue  # no endpoint configured — leave health as unknown
                     result = check_health_sync(r.host, r.port, endpoint)
                     r.health = HealthStatus.HEALTHY if result == "Healthy" else HealthStatus.UNHEALTHY
                 except Exception:
