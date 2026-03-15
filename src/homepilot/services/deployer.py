@@ -157,10 +157,22 @@ class Deployer:
         return handler()
 
     # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _is_image_only(self) -> bool:
+        """True when the app uses a pre-built registry image (no source to build)."""
+        src = self._app.source
+        return bool(self._app.deploy.image_name) and not src.path and not src.git_url
+
+    # ------------------------------------------------------------------
     # Individual step implementations
     # ------------------------------------------------------------------
 
     def _step_validate_source(self) -> str:
+        if self._is_image_only():
+            raise _SkipStep(f"Image-only app — using {self._app.deploy.image_name}")
+
         if self._app.source.type == SourceType.GIT:
             return self._clone_or_pull_git()
 
@@ -206,6 +218,8 @@ class Deployer:
             return f"Git cloned: {url} ({branch})"
 
     def _step_build_image(self) -> str:
+        if self._is_image_only():
+            raise _SkipStep("Image-only app — skipping build")
         src = self._app.source_path()
         tag = self._app.deploy.image_name
         ok = self._docker.build_image(src, self._app.build, tag, self._line_cb)
@@ -214,6 +228,8 @@ class Deployer:
         return f"Image built: {tag}:latest"
 
     def _step_export_image(self) -> str:
+        if self._is_image_only():
+            raise _SkipStep("Image-only app — skipping export")
         tag = self._app.deploy.image_name
         self._tar_path = Path(tempfile.gettempdir()) / f"{tag}-latest.tar"
         ok = self._docker.save_image(tag, self._tar_path)
@@ -229,6 +245,8 @@ class Deployer:
         return f"Connected to {self._server.user}@{self._server.host}"
 
     def _step_transfer_image(self) -> str:
+        if self._is_image_only():
+            raise _SkipStep("Image-only app — skipping transfer")
         assert self._ssh is not None
         remote_path = f"/tmp/{self._tar_path.name}"
         self._remote_tar = remote_path
@@ -238,6 +256,12 @@ class Deployer:
 
     def _step_load_image(self) -> str:
         assert self._truenas is not None
+        if self._is_image_only():
+            image = self._app.deploy.image_name
+            ok = self._truenas.pull_image(image)
+            if not ok:
+                raise RuntimeError(f"docker pull failed for {image}")
+            return f"Pulled from registry: {image}"
         ok = self._truenas.load_image(self._remote_tar)
         if not ok:
             raise RuntimeError("docker load failed on server")
@@ -356,10 +380,6 @@ class Deployer:
             messages.append("remote tar removed")
 
         return "; ".join(messages) if messages else "Nothing to clean up"
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     def _line_cb_progress(self, transferred: int, total: int) -> None:
         """Convert SFTP progress to a line callback."""

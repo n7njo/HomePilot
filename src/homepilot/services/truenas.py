@@ -37,6 +37,17 @@ class TrueNASService:
         logger.info("Image loaded: %s", out.strip())
         return True
 
+    def pull_image(self, image: str) -> bool:
+        """Pull a Docker image from a registry on the server."""
+        out, err, code = self._ssh.run_command(
+            f"{self._docker} pull {image}", timeout=300
+        )
+        if code != 0:
+            logger.error("docker pull failed: %s", err)
+            return False
+        logger.info("Image pulled: %s", out.strip())
+        return True
+
     def image_exists(self, image_name: str) -> bool:
         """Check if a Docker image exists on the server."""
         out, _, code = self._ssh.run_command(
