@@ -192,6 +192,11 @@ class DashboardScreen(Screen):
             if r.resource_type == ResourceType.DOCKER_CONTAINER and r.port:
                 try:
                     app_cfg = self._config.apps.get(r.name)
+                    if app_cfg is None:
+                        for cfg in self._config.apps.values():
+                            if cfg.deploy.container_name == r.name:
+                                app_cfg = cfg
+                                break
                     endpoint = app_cfg.health.endpoint if app_cfg else "/api/health"
                     if not endpoint:
                         continue  # no endpoint configured — leave health as unknown
@@ -279,7 +284,8 @@ class DashboardScreen(Screen):
         if isinstance(host_cfg, ProxmoxHostConfig):
             return "✅ Ready" if has_image else "⚙  Config"
         has_source = bool(app_cfg.source.path or app_cfg.source.git_url)
-        return "✅ Ready" if (has_source and has_image) else "⚙  Config"
+        # Source-built apps need both; image-only (registry) apps just need an image name.
+        return "✅ Ready" if has_image else "⚙  Config"
 
     def _rebuild_server_panel(self, resources: list[Resource]) -> None:
         """Update the server summary table with live status and app counts."""
