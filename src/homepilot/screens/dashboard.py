@@ -195,7 +195,11 @@ class DashboardScreen(Screen):
                     if not endpoint:
                         continue  # no endpoint configured — leave health as unknown
                     result = check_health_sync(r.host, r.port, endpoint)
-                    r.health = HealthStatus.HEALTHY if result == "Healthy" else HealthStatus.UNHEALTHY
+                    if result == "Healthy":
+                        r.health = HealthStatus.HEALTHY
+                    elif result == "Unhealthy":
+                        r.health = HealthStatus.UNHEALTHY
+                    # "Unknown" → leave r.health as-is (unknown)
                 except Exception:
                     pass
 
@@ -268,8 +272,12 @@ class DashboardScreen(Screen):
             )
 
     def _deploy_readiness_from_config(self, app_cfg) -> str:
-        has_source = bool(app_cfg.source.path or app_cfg.source.git_url)
+        from homepilot.models import ProxmoxHostConfig
         has_image = bool(app_cfg.deploy.image_name)
+        host_cfg = self._config.hosts.get(app_cfg.host or "")
+        if isinstance(host_cfg, ProxmoxHostConfig):
+            return "✅ Ready" if has_image else "⚙  Config"
+        has_source = bool(app_cfg.source.path or app_cfg.source.git_url)
         return "✅ Ready" if (has_source and has_image) else "⚙  Config"
 
     def _rebuild_server_panel(self, resources: list[Resource]) -> None:

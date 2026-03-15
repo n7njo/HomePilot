@@ -24,15 +24,19 @@ HealthCallback = Callable[[HealthEvent], None]
 # ---------------------------------------------------------------------------
 
 def check_health_sync(host: str, port: int, endpoint: str, timeout: float = 5) -> str:
-    """Perform a single health check. Returns 'Healthy' or 'Unhealthy'."""
-    url = f"http://{host}:{port}{endpoint}"
-    try:
-        resp = httpx.get(url, timeout=timeout)
-        if resp.status_code == 200:
-            return "Healthy"
-    except httpx.RequestError:
-        pass
-    return "Unhealthy"
+    """Perform a single health check. Returns 'Healthy', 'Unhealthy', or 'Unknown'."""
+    got_response = False
+    for scheme in ("http", "https"):
+        url = f"{scheme}://{host}:{port}{endpoint}"
+        try:
+            resp = httpx.get(url, timeout=timeout, follow_redirects=True)
+            got_response = True
+            if resp.status_code < 500:
+                return "Healthy"
+        except httpx.RequestError:
+            continue
+    # No HTTP response at all (connection refused, wrong protocol, etc.) → Unknown
+    return "Unhealthy" if got_response else "Unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -46,18 +50,19 @@ async def check_health_async(
 
     Returns (HealthStatus, response_time_ms).
     """
-    url = f"http://{host}:{port}{endpoint}"
     start = time.monotonic()
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, timeout=timeout)
-            elapsed_ms = (time.monotonic() - start) * 1000
-            if resp.status_code == expected_status:
-                return HealthStatus.HEALTHY, elapsed_ms
-            return HealthStatus.UNHEALTHY, elapsed_ms
-    except httpx.RequestError:
-        elapsed_ms = (time.monotonic() - start) * 1000
-        return HealthStatus.UNHEALTHY, elapsed_ms
+    for scheme in ("http", "https"):
+        url = f"{scheme}://{host}:{port}{endpoint}"
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, timeout=timeout, follow_redirects=True)
+                elapsed_ms = (time.monotonic() - start) * 1000
+                if resp.status_code < 500:
+                    return HealthStatus.HEALTHY, elapsed_ms
+        except httpx.RequestError:
+            continue
+    elapsed_ms = (time.monotonic() - start) * 1000
+    return HealthStatus.UNHEALTHY, elapsed_ms
 
 
 class HealthMonitor:
