@@ -248,6 +248,28 @@ class DashboardScreen(Screen):
                 key=rkey,
             )
 
+        # Add configured apps that have no matching live resource (e.g. not yet deployed)
+        live_names = {r.name for r in resources} | {r.id for r in resources}
+        for name, app_cfg in self._config.apps.items():
+            container = app_cfg.deploy.container_name
+            if name in live_names or container in live_names:
+                continue
+            host_key = app_cfg.host or next(iter(self._config.hosts), "")
+            port = str(app_cfg.deploy.host_port) if app_cfg.deploy.host_port else "—"
+            image = f"{app_cfg.deploy.image_name}:latest" if app_cfg.deploy.image_name else ""
+            rkey = f"{host_key}:{name}"
+            table.add_row(
+                host_key, name, "Docker", "⚪ Not deployed",
+                "—", port, "—", image,
+                self._deploy_readiness_from_config(app_cfg),
+                key=rkey,
+            )
+
+    def _deploy_readiness_from_config(self, app_cfg) -> str:
+        has_source = bool(app_cfg.source.path or app_cfg.source.git_url)
+        has_image = bool(app_cfg.deploy.image_name)
+        return "✅ Ready" if (has_source and has_image) else "⚙  Config"
+
     def _rebuild_server_panel(self, resources: list[Resource]) -> None:
         """Update the server summary table with live status and app counts."""
         srv = self.query_one("#server-table", DataTable)
@@ -319,9 +341,7 @@ class DashboardScreen(Screen):
                     break
         if app_cfg is None:
             return "—"
-        has_source = bool(app_cfg.source.path or app_cfg.source.git_url)
-        has_image = bool(app_cfg.deploy.image_name)
-        return "✅ Ready" if (has_source and has_image) else "⚙  Config"
+        return self._deploy_readiness_from_config(app_cfg)
 
     def _get_selected_app_name(self) -> str | None:
         r = self._get_selected_resource()
