@@ -330,7 +330,7 @@ def validate_config(config: HomePilotConfig) -> list[str]:
         prefix = f"apps.{name}"
         if app.host and app.host not in config.hosts:
             errors.append(f"{prefix}.host '{app.host}' does not match any configured host")
-        if app.source.type == SourceType.LOCAL and not app.source.path:
+        if app.source.type == SourceType.LOCAL and not app.source.path and not app.deploy.image_name:
             errors.append(f"{prefix}.source.path is required for local sources")
         if app.source.type == SourceType.GIT and not app.source.git_url:
             errors.append(f"{prefix}.source.git_url is required for git sources")
