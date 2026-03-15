@@ -7,7 +7,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Select, Static
+from textual.widgets import DataTable, Footer, Header, Input, Label, Select, Static
 
 from homepilot.models import HomePilotConfig
 from homepilot.providers import ProviderRegistry
@@ -19,7 +19,7 @@ class RegistryBrowserScreen(Screen):
 
     BINDINGS = [
         Binding("escape", "go_back", "Back", show=True),
-        Binding("enter", "configure_selected", "Configure →", show=True),
+        Binding("ctrl+n", "configure_selected", "Create Config", show=True),
         Binding("ctrl+t", "fetch_tags", "Fetch Tags", show=True),
     ]
 
@@ -50,10 +50,7 @@ class RegistryBrowserScreen(Screen):
     #host-select {
         width: 30;
     }
-    #create-config-btn {
-        margin: 0 0 0 2;
-    }
-    #status {
+#status {
         margin: 0 2 0 2;
         color: $text-muted;
         height: 1;
@@ -81,8 +78,7 @@ class RegistryBrowserScreen(Screen):
                 Input(value="latest", id="tag-input"),
                 Label("Server:"),
                 Select(host_options, value=default_host, id="host-select"),
-                Button("Create Config", variant="primary", id="create-config-btn"),
-                id="bottom-bar",
+id="bottom-bar",
             ),
             id="browser-body",
         )
@@ -190,10 +186,6 @@ class RegistryBrowserScreen(Screen):
                 },
             )
         )
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "create-config-btn":
-            self.action_configure_selected()
 
     def action_go_back(self) -> None:
         self.app.pop_screen()
