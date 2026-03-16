@@ -12,6 +12,7 @@ from homepilot.providers.base import (
     Resource,
     ResourceStatus,
     ResourceType,
+    detect_protocol,
 )
 from homepilot.services.ssh import SSHService
 from homepilot.services.truenas import TrueNASService
@@ -160,6 +161,7 @@ class TrueNASProvider:
             if up_match:
                 uptime = up_match.group(1).strip()
 
+            image = c.get("image", "")
             resources.append(Resource(
                 id=c.get("name", ""),
                 name=c.get("name", ""),
@@ -168,7 +170,8 @@ class TrueNASProvider:
                 status=rs,
                 host=self._config.host,
                 port=port,
-                image=c.get("image", ""),
+                protocol=detect_protocol(port, image),
+                image=image,
                 uptime=uptime,
             ))
 

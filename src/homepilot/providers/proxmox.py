@@ -10,6 +10,7 @@ from homepilot.providers.base import (
     Resource,
     ResourceStatus,
     ResourceType,
+    detect_protocol,
 )
 from homepilot.services.proxmox_api import ProxmoxAPI, resolve_token
 
@@ -231,6 +232,7 @@ class ProxmoxProvider:
             if up_match:
                 uptime = up_match.group(1).strip()
 
+            image = c.get("image", "")
             resources.append(Resource(
                 id=c.get("name", ""),
                 name=c.get("name", ""),
@@ -239,7 +241,8 @@ class ProxmoxProvider:
                 status=rs,
                 host=self._config.host,
                 port=port,
-                image=c.get("image", ""),
+                protocol=detect_protocol(port, image),
+                image=image,
                 uptime=uptime,
             ))
 

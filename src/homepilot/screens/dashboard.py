@@ -134,6 +134,7 @@ class DashboardScreen(Screen):
         self._populate_config_apps()
         self._populate_server_panel()
         self._connect_and_refresh()
+        self.set_interval(5, self._refresh_in_background)
 
     # -- Initial population (config only, no network) ------------------------
 
@@ -189,7 +190,7 @@ class DashboardScreen(Screen):
 
         from homepilot.services.health import check_health_sync
         for r in resources:
-            if r.resource_type == ResourceType.DOCKER_CONTAINER and r.port:
+            if r.resource_type == ResourceType.DOCKER_CONTAINER and r.port and r.protocol != "tcp":
                 try:
                     app_cfg = self._config.apps.get(r.name)
                     if app_cfg is None:
@@ -240,7 +241,7 @@ class DashboardScreen(Screen):
             }.get(r.health, "")
 
             port_col = (
-                f"{'https' if r.port == 443 else 'http'}://{r.host}:{r.port}"
+                f"{r.protocol}://{r.host}:{r.port}"
                 if r.port else "—"
             )
             health_col = (

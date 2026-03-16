@@ -39,6 +39,59 @@ class HealthStatus(str, Enum):
 
 
 # ---------------------------------------------------------------------------
+# Protocol detection
+# ---------------------------------------------------------------------------
+
+# Ports that are always TCP (non-HTTP) regardless of image name.
+_TCP_PORTS: frozenset[int] = frozenset({
+    3306,   # MySQL / MariaDB / Dolt
+    5432,   # PostgreSQL
+    6379,   # Redis
+    6380,   # Redis TLS
+    27017,  # MongoDB
+    27018,  # MongoDB shard
+    1433,   # MSSQL
+    1521,   # Oracle DB
+    5672,   # RabbitMQ AMQP
+    4369,   # RabbitMQ EPMD
+    2181,   # Zookeeper
+    2379,   # etcd client
+    2380,   # etcd peer
+    9300,   # Elasticsearch transport
+    7000,   # Cassandra inter-node
+    7001,   # Cassandra TLS
+    9042,   # Cassandra CQL
+    11211,  # Memcached
+})
+
+# Image name fragments that indicate a TCP-only service.
+_TCP_IMAGE_FRAGMENTS: tuple[str, ...] = (
+    "mysql", "mariadb", "postgres", "redis", "mongo",
+    "mssql", "sqlserver", "cassandra", "zookeeper", "memcached",
+    "dolt", "cockroach", "clickhouse", "influxdb", "timescaledb",
+)
+
+
+def detect_protocol(port: int, image: str = "") -> str:
+    """Return the likely protocol for a service: 'tcp', 'https', or 'http'.
+
+    Detection order:
+    1. Well-known TCP port  → 'tcp'
+    2. Image name hint      → 'tcp'
+    3. Port 443             → 'https'
+    4. Default              → 'http'
+    """
+    if port in _TCP_PORTS:
+        return "tcp"
+    image_lower = image.lower()
+    if any(frag in image_lower for frag in _TCP_IMAGE_FRAGMENTS):
+        return "tcp"
+    if port == 443:
+        return "https"
+    return "http"
+
+
+# ---------------------------------------------------------------------------
 # Resource dataclass
 # ---------------------------------------------------------------------------
 
@@ -55,6 +108,7 @@ class Resource:
     health: HealthStatus = HealthStatus.UNKNOWN
     host: str = ""
     port: int = 0
+    protocol: str = "http"
     image: str = ""
     uptime: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
