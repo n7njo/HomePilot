@@ -30,6 +30,7 @@ class ResourceDetailScreen(Screen):
         Binding("x", "stop_resource", "Stop", show=True),
         Binding("r", "restart_resource", "Restart", show=True),
         Binding("d", "deploy_resource", "Deploy", show=True),
+        Binding("m", "migrate_resource", "Migrate", show=True),
         Binding("b", "backup_resource", "Backup", show=True),
         Binding("ctrl+r", "refresh_logs", "Refresh Logs", show=True),
         Binding("escape", "go_back", "Back", show=True),
@@ -71,6 +72,10 @@ class ResourceDetailScreen(Screen):
                 )
             with TabPane("Logs", id="logs"):
                 yield LogViewer(id="log-viewer")
+            with TabPane("History", id="history"):
+                yield VerticalScroll(
+                    Static(self._build_history_text(), id="history-content"),
+                )
             with TabPane("Actions", id="actions"):
                 yield VerticalScroll(
                     Static(self._build_actions_text(display_name), id="actions-content"),
@@ -94,6 +99,28 @@ class ResourceDetailScreen(Screen):
             if resource:
                 return self._build_resource_overview(resource)
         return f"\n  Resource: {self._resource_id}\n  Provider: {self._provider_name}\n  (no details available)"
+
+    def _build_history_text(self) -> str:
+        if not self._app_config or not self._app_config.history:
+            return "\n  No history events recorded."
+
+        lines = ["\n  App History:"]
+        for event in reversed(self._app_config.history):
+            ts = event.timestamp.replace("T", " ").split(".")[0]
+            icon = {
+                "created": "🆕",
+                "config_changed": "⚙️",
+                "deployed": "🚀",
+                "migrated": "🚛",
+                "deleted": "🗑️",
+            }.get(event.event_type.value, "•")
+
+            lines.append(f"  {ts}  {icon}  {event.message}")
+            if event.event_type == "deployed" and "commit_hash" in event.details:
+                h = event.details["commit_hash"]
+                if h:
+                    lines.append(f"             Commit: #{h}")
+        return "\n".join(lines)
 
     def _build_app_overview(self) -> str:
         app = self._app_config
@@ -181,6 +208,8 @@ class ResourceDetailScreen(Screen):
             else:
                 lines.append("  d   Deploy      (unavailable — no source path configured)")
 
+            lines.append("  m   Migrate     Move this app to a different server")
+
             if has_volumes:
                 lines.append("  b   Backup      Archive container data volumes to backup directory")
             else:
@@ -249,6 +278,13 @@ class ResourceDetailScreen(Screen):
             return
         from homepilot.screens.deploy import DeployScreen
         self.app.push_screen(DeployScreen(self._config, self._registry, self._app_config.name))
+
+    def action_migrate_resource(self) -> None:
+        if not self._app_config:
+            self.notify("No app config — only HomePilot-managed apps can be migrated.", severity="warning")
+            return
+        from homepilot.screens.migrate import MigrateScreen
+        self.app.push_screen(MigrateScreen(self._config, self._registry, self._app_config.name))
 
     def action_backup_resource(self) -> None:
         if not self._app_config or not self._app_config.volumes:

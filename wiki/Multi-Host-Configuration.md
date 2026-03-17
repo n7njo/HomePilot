@@ -10,6 +10,8 @@ hosts:
     type: truenas
     host: truenas.local
     user: neil
+    enable_netdata: true
+    netdata_port: 19999
     ssh_key: ""
     docker_cmd: sudo docker
     midclt_cmd: sudo -i midclt call

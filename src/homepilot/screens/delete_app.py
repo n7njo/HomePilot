@@ -7,7 +7,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Header, Label, Static
+from textual.widgets import Footer, Header, Label, Static
 
 from homepilot.config import save_config
 from homepilot.models import HomePilotConfig
@@ -15,9 +15,12 @@ from homepilot.providers import ProviderRegistry
 
 
 class DeleteAppScreen(Screen):
-    """Ask the user how thoroughly to delete an app."""
+    """Ask the user how thoroughly to delete an app using keyboard shortcuts."""
 
     BINDINGS = [
+        Binding("1", "delete_config_only", "Config only", show=True),
+        Binding("2", "delete_stop_remove", "Stop & Remove", show=True),
+        Binding("3", "delete_full_cleanup", "Full Cleanup", show=True),
         Binding("escape", "go_back", "Cancel", show=True),
     ]
 
@@ -49,42 +52,31 @@ class DeleteAppScreen(Screen):
             Label(f"  Container:  {container}"),
             Label(f"  Volumes:\n{vol_info}\n"),
             Static("", id="del-status"),
-            Label("  Choose how to remove this app:\n"),
-            Button(
-                "  Config only         — remove from HomePilot, leave server untouched",
-                id="btn-config-only",
-                variant="default",
-            ),
-            Button(
-                "  Stop & remove       — stop + delete the container (keep volumes)",
-                id="btn-stop-remove",
-                variant="warning",
-            ),
-            Button(
-                "  Full cleanup        — stop container + delete volumes on server",
-                id="btn-full-cleanup",
-                variant="error",
-            ),
-            Button("  Cancel", id="btn-cancel", variant="default"),
+            Label("  [bold]Choose an action:[/bold]\n"),
+            Label("  [cyan]1[/cyan]  [bold]Config only[/bold]         — remove from HomePilot, leave server untouched"),
+            Label("  [cyan]2[/cyan]  [bold]Stop & remove[/bold]       — stop + delete the container (keep volumes)"),
+            Label("  [cyan]3[/cyan]  [bold]Full cleanup[/bold]        — stop container + delete volumes on server"),
+            Label("\n  [cyan]Esc[/cyan] Cancel"),
             Label(""),
             VerticalScroll(id="del-log"),
             id="del-body",
         )
         yield Footer()
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
+    def action_delete_config_only(self) -> None:
+        self._trigger_delete(cleanup_server=False, cleanup_volumes=False)
+
+    def action_delete_stop_remove(self) -> None:
+        self._trigger_delete(cleanup_server=True, cleanup_volumes=False)
+
+    def action_delete_full_cleanup(self) -> None:
+        self._trigger_delete(cleanup_server=True, cleanup_volumes=True)
+
+    def _trigger_delete(self, *, cleanup_server: bool, cleanup_volumes: bool) -> None:
         if self._done:
             return
-        btn_id = event.button.id
-
-        if btn_id == "btn-cancel":
-            self.action_go_back()
-            return
-
-        cleanup_volumes = btn_id == "btn-full-cleanup"
-        cleanup_server = btn_id in ("btn-stop-remove", "btn-full-cleanup")
-
         self._done = True
+        self.query_one("#del-status", Static).update("[yellow]Deleting...[/yellow]")
         self._run_delete(cleanup_server=cleanup_server, cleanup_volumes=cleanup_volumes)
 
     @work(thread=True)
@@ -101,8 +93,9 @@ class DeleteAppScreen(Screen):
             self._server_cleanup(app_cfg, remove_volumes=cleanup_volumes)
 
         # Remove from config regardless
-        del self._config.apps[self._app_name]
-        save_config(self._config)
+        if self._app_name in self._config.apps:
+            del self._config.apps[self._app_name]
+            save_config(self._config)
 
         label = "config + server" if cleanup_server else "config"
         vol_label = " + volumes" if cleanup_volumes else ""
@@ -188,6 +181,17 @@ class DeleteAppScreen(Screen):
             log(f"Container '{container}' stopped and removed")
         else:
             log(f"Container '{container}' not found")
+
+        # Cleanup volumes on TrueNAS if requested
+        if remove_volumes:
+            for vol in app_cfg.volumes:
+                if vol.host:
+                    # Use SSH directly for volume removal since it's a file system op
+                    _, err, code = provider.ssh.run_command(f"rm -rf {vol.host}")
+                    if code == 0:
+                        log(f"Removed volume: {vol.host}")
+                    else:
+                        log(f"⚠️  Could not remove {vol.host}: {err.strip()}")
 
     def _append_log(self, line: str) -> None:
         try:

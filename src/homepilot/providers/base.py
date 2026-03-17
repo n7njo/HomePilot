@@ -92,8 +92,44 @@ def detect_protocol(port: int, image: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Resource dataclass
+# Metrics and Resource data models
 # ---------------------------------------------------------------------------
+
+
+def render_sparkline(values: list[float], width: int = 8) -> str:
+    """Render a simple Unicode sparkline from a list of values (0-100)."""
+    if not values:
+        return " " * width
+
+    # Take the last 'width' values
+    data = values[-width:]
+    # Pad with spaces if not enough data
+    if len(data) < width:
+        data = ([0.0] * (width - len(data))) + data
+
+    chars = " ▂▃▄▅▆▇█"
+    line = ""
+    for v in data:
+        # Map 0-100 to 0-7
+        idx = min(int(v / 12.5), 7)
+        line += chars[idx]
+    return line
+
+
+@dataclass
+class HostMetrics:
+    """Real-time server resource usage."""
+
+    cpu_pct: float = 0.0
+    ram_used_gb: float = 0.0
+    ram_total_gb: float = 0.0
+    disk_pct: float = 0.0
+
+    @property
+    def ram_pct(self) -> float:
+        if self.ram_total_gb <= 0:
+            return 0.0
+        return (self.ram_used_gb / self.ram_total_gb) * 100
 
 
 @dataclass
@@ -107,10 +143,13 @@ class Resource:
     status: ResourceStatus = ResourceStatus.UNKNOWN
     health: HealthStatus = HealthStatus.UNKNOWN
     host: str = ""
+    address: str = "0.0.0.0"
     port: int = 0
     protocol: str = "http"
     image: str = ""
     uptime: str = ""
+    commit_hash: str = ""
+    managed: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def status_display(self) -> str:
@@ -149,6 +188,16 @@ class InfraProvider(Protocol):
     @property
     def provider_type(self) -> str:
         """Provider type string (e.g. 'truenas', 'proxmox')."""
+        ...
+
+    @property
+    def using_netdata(self) -> bool:
+        """Return True if currently using Netdata for metrics."""
+        ...
+
+    @property
+    def metrics_history(self) -> list[float]:
+        """Last 30 CPU readings for sparkline rendering."""
         ...
 
     # -- Connection lifecycle ------------------------------------------------
@@ -201,4 +250,8 @@ class InfraProvider(Protocol):
 
     def status(self, resource_id: str) -> ResourceStatus:
         """Query the current status of a resource."""
+        ...
+
+    def get_metrics(self) -> HostMetrics | None:
+        """Fetch real-time host health metrics."""
         ...

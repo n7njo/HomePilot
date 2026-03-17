@@ -12,9 +12,11 @@ from typing import Callable, Generator
 
 from homepilot.models import (
     AppConfig,
+    AppHistoryEvent,
     DeploymentState,
     DeployStep,
     DeployStepStatus,
+    HistoryEventType,
     PortMode,
     ServerConfig,
     SourceType,
@@ -113,6 +115,21 @@ class Deployer:
 
         self.state.finished_at = datetime.now(timezone.utc)
         self.state.aborted = self._aborted
+
+        if not self._aborted and self.state.succeeded:
+            # Record deployment in history
+            self._app.last_deployed = self.state.finished_at.isoformat()
+            commit_hash = self._get_commit_hash()
+            event = AppHistoryEvent(
+                timestamp=self._app.last_deployed,
+                event_type=HistoryEventType.DEPLOYED,
+                message=f"Successfully deployed to {self._server.host}",
+                details={
+                    "image": f"{self._app.deploy.image_name}:latest",
+                    "commit_hash": commit_hash or "",
+                }
+            )
+            self._app.history.append(event)
 
         # Cleanup SSH connection.
         if self._ssh:
@@ -405,6 +422,29 @@ class Deployer:
         if self._line_cb and total > 0:
             pct = (transferred / total) * 100
             self._line_cb(f"Transfer: {pct:.0f}% ({transferred}/{total} bytes)")
+
+    def _get_commit_hash(self) -> str | None:
+        """Attempt to get the current short commit hash from the source."""
+        if self._is_image_only():
+            return None
+
+        src = self._app.source_path()
+        if not src or not src.exists():
+            return None
+
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=str(src),
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception:
+            pass
+        return None
 
 
 class _SkipStep(Exception):

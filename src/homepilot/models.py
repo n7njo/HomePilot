@@ -28,6 +28,20 @@ class PortMode(str, Enum):
     DYNAMIC = "dynamic"
 
 
+class AccessLevel(str, Enum):
+    """Visibility of the application."""
+
+    INTERNAL = "internal"  # Bound to 127.0.0.1
+    PUBLIC = "public"    # Bound to 0.0.0.0
+
+
+class NetworkMode(str, Enum):
+    """Docker network mode."""
+
+    BRIDGE = "bridge"
+    HOST = "host"
+
+
 class AppStatus(str, Enum):
     """Runtime status of a deployed container."""
 
@@ -53,6 +67,26 @@ class DeployStepStatus(str, Enum):
     SUCCESS = "success"
     FAILED = "failed"
     SKIPPED = "skipped"
+
+
+class HistoryEventType(str, Enum):
+    """Types of events recorded in the app audit history."""
+
+    CREATED = "created"
+    CONFIG_CHANGED = "config_changed"
+    DEPLOYED = "deployed"
+    MIGRATED = "migrated"
+    DELETED = "deleted"
+
+
+@dataclass
+class AppHistoryEvent:
+    """A single event in the application's audit history."""
+
+    timestamp: str  # ISO-8601
+    event_type: HistoryEventType
+    message: str
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -86,13 +120,14 @@ class HostConfig:
 
     type: str = ""  # "truenas" or "proxmox"
     host: str = ""
+    enable_netdata: bool = True
+    netdata_port: int = 19999
 
 
 @dataclass
 class TrueNASHostConfig(HostConfig):
     """TrueNAS host configuration."""
 
-    type: str = "truenas"
     user: str = "neil"
     admin_user: str = ""  # original admin for bootstrap; preserved when user → homepilot
     ssh_key: str = ""  # empty = use SSH agent
@@ -122,8 +157,8 @@ class TrueNASHostConfig(HostConfig):
 class ProxmoxHostConfig(HostConfig):
     """Proxmox VE host configuration."""
 
-    type: str = "proxmox"
-    token_id: str = ""  # e.g. "user@pve!token-name"
+    token_id: str = ""
+  # e.g. "user@pve!token-name"
     token_secret: str = ""  # inline secret (prefer keychain/env)
     token_source: str = "env"  # "keychain", "env", or "inline"
     verify_ssl: bool = False
@@ -169,6 +204,8 @@ class DeployConfig:
     host_port: int = 0
     container_port: int = 5000
     port_mode: PortMode = PortMode.FIXED
+    access_level: AccessLevel = AccessLevel.PUBLIC
+    network_mode: NetworkMode = NetworkMode.BRIDGE
 
 
 @dataclass
@@ -201,7 +238,9 @@ class AppConfig:
     health: HealthConfig = field(default_factory=HealthConfig)
     volumes: list[VolumeMount] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    public_host: str = ""  # Optional override for display (e.g. truenas.local)
     last_deployed: str = ""  # ISO-8601 timestamp, empty = never deployed
+    history: list[AppHistoryEvent] = field(default_factory=list)
 
     def source_path(self) -> Path:
         """Resolved local path to the source directory."""
@@ -306,6 +345,7 @@ class AppRuntimeInfo:
     health_response_ms: float = 0.0
     container_id: str = ""
     error_message: str = ""
+    commit_hash: str = ""
 
     def to_row(self) -> tuple[str, ...]:
         """Return a tuple suitable for a DataTable row."""
@@ -314,6 +354,9 @@ class AppRuntimeInfo:
             if self.last_deployed
             else "—"
         )
+        if self.commit_hash:
+            deployed = f"#{self.commit_hash} {deployed}"
+
         return (
             self.name,
             self.status.value,

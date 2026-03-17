@@ -1,15 +1,15 @@
 # Proxmox Provider
 
 The Proxmox provider manages VMs and LXC containers via the Proxmox VE REST API.
-
 ## How It Works
 
 ```
 ProxmoxProvider
-    └── ProxmoxAPI → httpx REST client → PVE API (port 8006)
+    ├── ProxmoxAPI → httpx REST client → PVE API (port 8006)
+    └── NetdataService → host metrics (CPU, RAM, Disk)
 ```
 
-The provider authenticates using a PVE API token and communicates over HTTPS. It discovers all VMs and LXC containers across all cluster nodes.
+The provider authenticates using a PVE API token and communicates over HTTPS. It discovers all VMs and LXC containers across all cluster nodes. Real-time metrics are fetched via Netdata (if enabled) or fallback PVE API metrics.
 
 ## Config Fields
 
@@ -18,8 +18,11 @@ hosts:
   proxmox:
     type: proxmox
     host: 192.168.1.10:8006 # PVE host:port
+    enable_netdata: true # enable sparklines in TUI
+    netdata_port: 19999
     token_id: homepilot@pam!homepilot # PVE API token ID
-    token_secret: "" # token secret (see below)
+...
+```
     token_source: env # "env" or "config"
     verify_ssl: false # set true if using valid certs
     ssh_user: root # for SSH-based operations

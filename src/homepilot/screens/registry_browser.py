@@ -98,9 +98,15 @@ id="bottom-bar",
             return
         query = event.value.strip()
         if query:
-            self._search(query)
+            # Simple debouncing via timer: cancel any existing search worker
+            self.run_worker(self._debounced_search(query), exclusive=True)
         else:
             self._clear_results()
+
+    async def _debounced_search(self, query: str) -> None:
+        import asyncio
+        await asyncio.sleep(0.5)  # wait for user to stop typing
+        self._search(query)
 
     @work(thread=True)
     def _search(self, query: str) -> None:
@@ -127,8 +133,11 @@ id="bottom-bar",
         count = len(results)
         label = "result" if count == 1 else "results"
         self.query_one("#status", Static).update(f"  {count} {label} found — [bold]Enter[/bold] to configure")
-        if results:
-            table.focus()
+        # DO NOT focus() here; let the user finish typing or use Down/Tab to move to results
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Trigger configuration when a row is selected (Enter pressed)."""
+        self.action_configure_selected()
 
     def _selected_image(self) -> RegistryImage | None:
         table = self.query_one("#results-table", DataTable)
@@ -173,6 +182,11 @@ id="bottom-bar",
         service_name = image.name.split("/")[-1]
         image_ref = f"{image.name}:{tag}"
 
+        # Guess default port and health endpoint
+        is_nginx = "nginx" in image.name.lower()
+        container_port = "80" if is_nginx else "5000"
+        health_endpoint = "/" if is_nginx else "/api/health"
+
         from homepilot.screens.add_resource import AddResourceScreen
         self.app.push_screen(
             AddResourceScreen(
@@ -183,6 +197,8 @@ id="bottom-bar",
                     "app_name": service_name,
                     "image_name": image_ref,
                     "container_name": f"{service_name}-app",
+                    "container_port": container_port,
+                    "health_endpoint": health_endpoint,
                 },
             )
         )

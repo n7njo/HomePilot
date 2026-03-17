@@ -121,8 +121,8 @@ class TrueNASService:
             return {}
 
     def list_containers(self) -> list[dict[str, str]]:
-        """List all containers as dicts with keys: name, status, image, ports."""
-        fmt = '{{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}'
+        """List all containers as dicts with keys: name, status, image, ports, networks."""
+        fmt = '{{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}\t{{.Networks}}'
         out, _, code = self._ssh.run_command(
             f'{self._docker} ps -a --format "{fmt}"'
         )
@@ -132,12 +132,13 @@ class TrueNASService:
         containers: list[dict[str, str]] = []
         for line in out.strip().splitlines():
             parts = line.split("\t")
-            if len(parts) >= 4:
+            if len(parts) >= 5:
                 containers.append({
                     "name": parts[0],
                     "status": parts[1],
                     "image": parts[2],
                     "ports": parts[3],
+                    "networks": parts[4],
                 })
         return containers
 
@@ -192,17 +193,53 @@ class TrueNASService:
 
         Returns (success, error_message).
         """
+        # Check port availability first
+        if app.deploy.host_port != 0:
+            used_ports = self.get_used_ports()
+            if app.deploy.host_port in used_ports:
+                msg = f"Port {app.deploy.host_port} is already in use on the host."
+                logger.error(msg)
+                if line_callback:
+                    line_callback(f"Error: {msg}")
+                return False, msg
+
+        # Handle firewall if Public
+        from homepilot.models import AccessLevel
+        if app.deploy.access_level == AccessLevel.PUBLIC and app.deploy.host_port != 0:
+            if line_callback:
+                line_callback(f"Opening firewall port {app.deploy.host_port}...")
+            # Try UFW first
+            _, _, code = self._ssh.run_command(f"sudo ufw allow {app.deploy.host_port}/tcp")
+            if code != 0:
+                # Try nftables
+                _, _, code = self._ssh.run_command(f"sudo nft add rule inet filter input tcp dport {app.deploy.host_port} accept")
+                if code != 0:
+                    # Fallback to iptables. 
+                    # We insert (-I) at the top of INPUT and also DOCKER-USER if it exists.
+                    self._ssh.run_command(f"sudo iptables -I INPUT -p tcp --dport {app.deploy.host_port} -j ACCEPT")
+                    self._ssh.run_command(f"sudo iptables -I FORWARD -p tcp --dport {app.deploy.host_port} -j ACCEPT")
+                    # DOCKER-USER is the preferred place for manual rules in Docker environments
+                    self._ssh.run_command(f"sudo iptables -I DOCKER-USER -p tcp --dport {app.deploy.host_port} -j ACCEPT")
+
         raw_image = app.deploy.image_name
         image = raw_image if ":" in raw_image else f"{raw_image}:latest"
         name = app.deploy.container_name
-        port_map = f"{app.deploy.host_port}:{app.deploy.container_port}"
+        
+        from homepilot.models import AccessLevel, NetworkMode
 
         parts = [
             self._docker, "run", "-d",
             "--name", name,
-            "-p", port_map,
             "--restart", "unless-stopped",
         ]
+
+        if app.deploy.network_mode == NetworkMode.HOST:
+            parts.extend(["--network", "host"])
+        else:
+            # BINDING ADDRESS handling
+            bind_addr = "0.0.0.0" if app.deploy.access_level == AccessLevel.PUBLIC else "127.0.0.1"
+            port_map = f"{bind_addr}:{app.deploy.host_port}:{app.deploy.container_port}"
+            parts.extend(["-p", port_map])
 
         for vol in app.volumes:
             vol_str = f"{vol.host}:{vol.container}"

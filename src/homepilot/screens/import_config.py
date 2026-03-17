@@ -20,6 +20,10 @@ from homepilot.models import (
     HealthConfig,
     HomePilotConfig,
     PortMode,
+    AccessLevel,
+    NetworkMode,
+    HistoryEventType,
+    AppHistoryEvent,
     SourceConfig,
     SourceType,
     VolumeMount,
@@ -54,6 +58,51 @@ def _load_legacy_app(container_name: str) -> dict:
 class ImportConfigScreen(Screen):
     """Review config extracted from a running container and save it."""
 
+    DEFAULT_CSS = """
+    ImportConfigScreen #wizard-body {
+        padding: 0 2;
+    }
+    ImportConfigScreen .section-header {
+        text-style: bold;
+        color: $accent;
+        padding: 1 0 0 0;
+    }
+    ImportConfigScreen Label {
+        color: $text-muted;
+        padding: 1 0 0 0;
+    }
+    ImportConfigScreen Input {
+        background: $surface;
+        border: tall $primary 40%;
+        color: $text;
+    }
+    ImportConfigScreen Input:focus {
+        border: tall $primary;
+    }
+    ImportConfigScreen Input.-invalid {
+        border: tall $error;
+    }
+    ImportConfigScreen Select {
+        background: $surface;
+        border: tall $primary 40%;
+    }
+    ImportConfigScreen Select:focus {
+        border: tall $primary;
+    }
+    ImportConfigScreen TextArea {
+        background: $surface;
+        border: tall $primary 40%;
+        color: $text;
+        height: 6;
+    }
+    ImportConfigScreen TextArea:focus {
+        border: tall $primary;
+    }
+    ImportConfigScreen #import-status, ImportConfigScreen #save-status {
+        padding: 0 0 1 0;
+    }
+    """
+
     BINDINGS = [
         Binding("ctrl+s", "save", "Save", show=True),
         Binding("escape", "go_back", "Cancel", show=True),
@@ -78,13 +127,13 @@ class ImportConfigScreen(Screen):
             Static("  Extracting configuration from container…", id="import-status"),
             Static("", id="save-status"),
 
-            Label("\n  App Name (config key):"),
+            Label("  Basic Info", classes="section-header"),
+            Label("  App Name (config key):"),
             Input(id="app-name", placeholder="my-app"),
-
             Label("  Image Name:"),
             Input(id="image-name"),
 
-            Label("\n  Source:"),
+            Label("  Source", classes="section-header"),
             Label("  Source Type:"),
             Select(
                 [(t.value, t.value) for t in SourceType],
@@ -98,24 +147,41 @@ class ImportConfigScreen(Screen):
             Label("  Git Branch:"),
             Input(value="main", id="git-branch"),
 
-            Label("\n  Build:"),
+            Label("  Build", classes="section-header"),
             Label("  Build Context (subdirectory, or '.' for root):"),
             Input(value=".", id="build-context"),
 
-            Label("\n  Deployment:"),
+            Label("  Deployment", classes="section-header"),
             Label("  Host Port:"),
             Input(id="host-port"),
             Label("  Container Port:"),
             Input(id="container-port"),
+            Label("  Access Level:"),
+            Select(
+                [(a.value, a.value) for a in AccessLevel],
+                value=AccessLevel.PUBLIC.value,
+                id="access-level",
+            ),
+            Label("  Network Mode:"),
+            Select(
+                [(n.value, n.value) for n in NetworkMode],
+                value=NetworkMode.BRIDGE.value,
+                id="network-mode",
+            ),
+            Label("  Public Host Override:"),
+            Input(id="public-host", placeholder="e.g. truenas.local"),
 
-            Label("\n  Health Check Endpoint:"),
+            Label("  Health Check", classes="section-header"),
+            Label("  Endpoint:"),
             Input(value="/", id="health-endpoint"),
 
-            Label("\n  Volume Mounts (one host:container or host:container:mode per line):"),
+            Label("  Volumes", classes="section-header"),
+            Label("  One host:container or host:container:mode per line:"),
             TextArea(id="volumes"),
 
-            Label("  Environment Variables (one KEY=VALUE per line):"),
-            Input(id="env-vars"),
+            Label("  Environment Variables", classes="section-header"),
+            Label("  One KEY=VALUE per line:"),
+            TextArea(id="env-vars"),
 
             id="wizard-body",
         )
@@ -183,7 +249,7 @@ class ImportConfigScreen(Screen):
                 if not any(entry.startswith(p) for p in _INTERNAL_ENV_PREFIXES):
                     env[k] = v
 
-        self.query_one("#env-vars", Input).value = "\n".join(f"{k}={v}" for k, v in env.items())
+        self.query_one("#env-vars", TextArea).load_text("\n".join(f"{k}={v}" for k, v in env.items()))
 
         source = "docker inspect + legacy config" if legacy else "docker inspect"
         status.update(f"[green]  Extracted from {source} — review and save.[/green]")
@@ -204,6 +270,9 @@ class ImportConfigScreen(Screen):
             src_type = SourceType(str(self.query_one("#source-type", Select).value))
             host_port = int(self.query_one("#host-port", Input).value or "0")
             container_port = int(self.query_one("#container-port", Input).value or "80")
+            access_level = AccessLevel(self.query_one("#access-level", Select).value)
+            network_mode = NetworkMode(self.query_one("#network-mode", Select).value)
+            public_host = self.query_one("#public-host", Input).value.strip()
 
             volumes: list[VolumeMount] = []
             for line in self.query_one("#volumes", TextArea).text.splitlines():
@@ -217,7 +286,7 @@ class ImportConfigScreen(Screen):
                         volumes.append(VolumeMount(host=host.strip(), container=container.strip(), mode=mode))
 
             env: dict[str, str] = {}
-            for line in self.query_one("#env-vars", Input).value.splitlines():
+            for line in self.query_one("#env-vars", TextArea).text.splitlines():
                 line = line.strip()
                 if "=" in line:
                     k, v = line.split("=", 1)
@@ -245,15 +314,27 @@ class ImportConfigScreen(Screen):
                     host_port=host_port,
                     container_port=container_port,
                     port_mode=PortMode.FIXED if host_port else PortMode.DYNAMIC,
+                    access_level=access_level,
+                    network_mode=network_mode,
                 ),
                 health=HealthConfig(
                     endpoint=self.query_one("#health-endpoint", Input).value.strip() or "/",
                 ),
                 volumes=volumes,
                 env=env,
+                public_host=public_host,
             )
 
             self._config.apps[name] = app
+
+            # Record creation in history
+            from datetime import datetime, timezone
+            app.history.append(AppHistoryEvent(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                event_type=HistoryEventType.CREATED,
+                message=f"Application imported from existing container: {r.name}",
+            ))
+
             save_config(self._config)
             save_status.update(f"[green]✅ '{name}' imported and saved.[/green]")
 

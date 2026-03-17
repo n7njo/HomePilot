@@ -11,13 +11,18 @@ HomePilot unifies management of your home lab infrastructure behind a single Tex
 
 ## Features
 
-- **Dashboard** — see all resources across all hosts at a glance with live health and status indicators
-- **Deploy** — build, transfer, and deploy Docker images to TrueNAS with a step-by-step progress view
-- **Configure** — edit app settings (source, ports, volumes, environment) via a form-based editor
-- **Add Apps** — register new apps with an auto-detecting wizard
-- **Logs** — view container logs in real-time
-- **Actions** — start, stop, restart, backup, and remove containers
-- **Headless mode** — deploy from scripts or CI with `homepilot deploy <app>`
+- **Dashboard** — see all resources across all hosts at a glance with live health and status indicators (CPU/RAM/Disk sparklines).
+- **Managed vs Discovered** — visual `[M]` (managed) vs `[D]` (discovered) tags for resources, with a cleanup workflow for unmanaged containers.
+- **Deploy** — build, transfer, and deploy Docker images to TrueNAS with a step-by-step progress view.
+- **Migrate** — cross-host Docker migration with volume data preservation.
+- **Configure** — edit app settings (source, ports, volumes, environment) via a form-based editor.
+- **External Connectivity** — manage access levels (Internal vs Public), public host overrides, and automatic firewall management (UFW/nftables/iptables).
+- **Audit History** — persistent timeline of app events (Created, Config Changed, Deployed, Migrated) including git commit hashes.
+- **Server Health** — integrated Netdata monitoring (CPU sparklines, RAM, Disk) with fallback to SSH/API metrics.
+- **Add Apps** — register new apps with an auto-detecting wizard or browse the Docker Hub registry.
+- **Logs** — view container logs in real-time.
+- **Actions** — start, stop, restart, backup, and remove containers.
+- **Headless mode** — deploy from scripts or CI with `homepilot deploy <app>`.
 
 ## Installation
 
@@ -93,9 +98,15 @@ apps:
 | Key     | Action                 |
 | ------- | ---------------------- |
 | `d`     | Deploy selected app    |
+| `m`     | Migrate selected app   |
 | `c`     | Configure selected app |
 | `l`     | View logs              |
-| `a`     | Add new app            |
+| `s`     | Stop / Start resource  |
+| `a`     | Add new resource       |
+| `n`     | Registry browser       |
+| `x`     | Delete app / resource  |
+| `h`     | Manage servers         |
+| `i`     | Import config          |
 | `r`     | Refresh health status  |
 | `Enter` | View app details       |
 | `Esc`   | Go back                |
@@ -153,12 +164,19 @@ src/homepilot/
 │   ├── dashboard.py     # Main dashboard
 │   ├── resource_detail.py
 │   ├── deploy.py
+│   ├── migrate.py       # App migration screen
 │   ├── config_editor.py
-│   └── add_resource.py
+│   ├── add_resource.py
+│   ├── delete_app.py    # Deletion confirmation
+│   ├── cleanup_resource.py # Unmanaged resource removal
+│   ├── registry_browser.py # Docker Hub browser
+│   └── host_manager.py  # Server configuration
 ├── services/            # Backend services
 │   ├── ssh.py           # Paramiko SSH wrapper
 │   ├── docker.py        # Local Docker operations
 │   ├── deployer.py      # Deploy pipeline orchestrator
+│   ├── migrator.py      # Cross-host migration logic
+│   ├── netdata.py       # Netdata metrics integration
 │   ├── health.py        # Health monitoring
 │   ├── truenas.py       # TrueNAS management
 │   └── proxmox_api.py   # PVE REST API client

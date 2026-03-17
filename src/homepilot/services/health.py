@@ -31,8 +31,10 @@ def check_health_sync(host: str, port: int, endpoint: str, timeout: float = 5) -
         try:
             resp = httpx.get(url, timeout=timeout, follow_redirects=True)
             got_response = True
-            if resp.status_code < 500:
-                return "Healthy"
+            resp.raise_for_status()
+            return "Healthy"
+        except httpx.HTTPStatusError:
+            return "Unhealthy"
         except httpx.RequestError:
             continue
     # No HTTP response at all (connection refused, wrong protocol, etc.) → Unknown
@@ -57,9 +59,9 @@ async def check_health_async(
             async with httpx.AsyncClient() as client:
                 resp = await client.get(url, timeout=timeout, follow_redirects=True)
                 elapsed_ms = (time.monotonic() - start) * 1000
-                if resp.status_code < 500:
-                    return HealthStatus.HEALTHY, elapsed_ms
-        except httpx.RequestError:
+                resp.raise_for_status()
+                return HealthStatus.HEALTHY, elapsed_ms
+        except (httpx.RequestError, httpx.HTTPStatusError):
             continue
     elapsed_ms = (time.monotonic() - start) * 1000
     return HealthStatus.UNHEALTHY, elapsed_ms

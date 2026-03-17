@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from homepilot.providers.base import (
     HealthStatus,
+    HostMetrics,
     Resource,
     ResourceStatus,
     ResourceType,
@@ -15,7 +16,7 @@ from homepilot.providers.base import (
 from homepilot.services.proxmox_api import ProxmoxAPI, resolve_token
 
 if TYPE_CHECKING:
-    from homepilot.models import ProxmoxHostConfig
+    from homepilot.models import ProxmoxHostConfig, HomePilotConfig
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +36,15 @@ class ProxmoxProvider:
     start/stop/restart/remove/logs/status through the unified interface.
     """
 
-    def __init__(self, host_key: str, config: ProxmoxHostConfig) -> None:
+    def __init__(self, host_key: str, config: ProxmoxHostConfig, hp_config: HomePilotConfig) -> None:
         self._host_key = host_key
         self._config = config
+        self._hp_config = hp_config
         self._api: ProxmoxAPI | None = None
         self.bootstrap_status: str = "—"
+        self.last_metrics: HostMetrics | None = None
+        self._using_netdata: bool = False
+        self._metrics_history: list[float] = []
 
     # -- Protocol properties -------------------------------------------------
 
@@ -54,6 +59,14 @@ class ProxmoxProvider:
     @property
     def provider_type(self) -> str:
         return "proxmox"
+
+    @property
+    def using_netdata(self) -> bool:
+        return self._using_netdata
+
+    @property
+    def metrics_history(self) -> list[float]:
+        return self._metrics_history
 
     # -- Connection lifecycle ------------------------------------------------
 
@@ -172,8 +185,14 @@ class ProxmoxProvider:
             else:
                 continue
 
+            # Determine if this is a HomePilot-managed app
+            is_managed = False
+            rid = self._make_resource_id(pve_type, node, vmid)
+            if name in self._hp_config.apps or rid in self._hp_config.apps:
+                is_managed = True
+
             resources.append(Resource(
-                id=self._make_resource_id(pve_type, node, vmid),
+                id=rid,
                 name=name,
                 resource_type=rt,
                 provider_name=self._host_key,
@@ -181,6 +200,7 @@ class ProxmoxProvider:
                 host=self._config.host,
                 port=vmid,
                 uptime=self._uptime_display(uptime),
+                managed=is_managed,
                 metadata={
                     "node": node,
                     "vmid": vmid,
@@ -233,9 +253,21 @@ class ProxmoxProvider:
                 uptime = up_match.group(1).strip()
 
             image = c.get("image", "")
+            name = c.get("name", "")
+
+            # Determine if this is a HomePilot-managed app
+            is_managed = False
+            if name in self._hp_config.apps:
+                is_managed = True
+            else:
+                for app_cfg in self._hp_config.apps.values():
+                    if app_cfg.deploy.container_name == name:
+                        is_managed = True
+                        break
+
             resources.append(Resource(
-                id=c.get("name", ""),
-                name=c.get("name", ""),
+                id=name,
+                name=name,
                 resource_type=ResourceType.DOCKER_CONTAINER,
                 provider_name=self._host_key,
                 status=rs,
@@ -244,6 +276,7 @@ class ProxmoxProvider:
                 protocol=detect_protocol(port, image),
                 image=image,
                 uptime=uptime,
+                managed=is_managed,
             ))
 
         return resources
@@ -302,8 +335,26 @@ class ProxmoxProvider:
             return False
 
     def remove(self, resource_id: str) -> bool:
-        # PVE resource deletion is destructive; require explicit stop first.
-        logger.warning("Remove not implemented for Proxmox resources (safety)")
+        # Check if this is a Docker container (ID is just the name)
+        if "/" not in resource_id:
+            try:
+                from homepilot.services.ssh import SSHService
+                from homepilot.services.truenas import TrueNASService
+                server_cfg = self._config.to_server_config()
+                ssh = SSHService(server_cfg)
+                ssh.connect()
+                try:
+                    svc = TrueNASService(ssh, server_cfg)
+                    svc.stop_container(resource_id)
+                    return svc.remove_container(resource_id)
+                finally:
+                    ssh.close()
+            except Exception as exc:
+                logger.error("Failed to remove Docker container %s: %s", resource_id, exc)
+                return False
+
+        # PVE native resource (VM/LXC) deletion remains disabled for safety
+        logger.warning("Remove not implemented for Proxmox native resources (safety): %s", resource_id)
         return False
 
     # -- Observability -------------------------------------------------------
@@ -356,3 +407,84 @@ class ProxmoxProvider:
             return self._pve_status_to_resource(data.get("status", "unknown"))
         except Exception:
             return ResourceStatus.UNKNOWN
+
+    def get_metrics(self) -> HostMetrics | None:
+        """Fetch node metrics via Netdata (primary) or PVE API (fallback)."""
+        # Periodic bootstrap re-check to keep the UI indicator fresh
+        self.check_bootstrap()
+
+        m: HostMetrics | None = None
+
+        # 1. Try Netdata first if enabled
+        if self._config.enable_netdata:
+            from homepilot.services.netdata import NetdataService
+            import asyncio
+            
+            nd = NetdataService(self._config.host, self._config.netdata_port)
+            try:
+                # We are likely in a background thread here
+                m = asyncio.run(nd.fetch_metrics())
+                if m:
+                    self._using_netdata = True
+            except Exception:
+                pass
+
+        if not m:
+            self._using_netdata = False
+            # 2. Fallback to PVE API
+            try:
+                api = self._ensure_api()
+                
+                # Try specific node status first (requires Sys.Audit)
+                try:
+                    nodes = api.get_nodes()
+                    if nodes:
+                        node_name = nodes[0].get("node")
+                        status = api.get_node_status(node_name)
+                        
+                        cpu = status.get("cpu", 0.0) * 100
+                        ram_used = status.get("memory", {}).get("used", 0)
+                        ram_total = status.get("memory", {}).get("total", 0)
+                        disk_used = status.get("rootfs", {}).get("used", 0)
+                        disk_total = status.get("rootfs", {}).get("total", 0)
+                        
+                        m = HostMetrics(
+                            cpu_pct=cpu,
+                            ram_used_gb=ram_used / (1024**3),
+                            ram_total_gb=ram_total / (1024**3),
+                            disk_pct=(disk_used / disk_total * 100) if disk_total else 0.0,
+                        )
+                except Exception as e:
+                    if "Permission check failed" not in str(e):
+                        raise e
+
+                if not m:
+                    # Secondary fallback: Use cluster resources
+                    cluster_resources = api.get_cluster_resources("node")
+                    if cluster_resources:
+                        node = cluster_resources[0]
+                        logger.debug("Proxmox cluster resource data for %s: %s", self._host_key, node)
+                        
+                        cpu = node.get("cpu", 0.0) * 100
+                        ram_used = node.get("mem", 0)
+                        ram_total = node.get("maxmem", 0)
+                        disk_used = node.get("disk", 0)
+                        disk_total = node.get("maxdisk", 0)
+                        
+                        m = HostMetrics(
+                            cpu_pct=cpu,
+                            ram_used_gb=ram_used / (1024**3),
+                            ram_total_gb=ram_total / (1024**3),
+                            disk_pct=(disk_used / disk_total * 100) if disk_total else 0.0,
+                        )
+            except Exception as exc:
+                logger.warning("Failed to fetch Proxmox metrics for %s: %s", self._host_key, exc)
+
+        if m:
+            self.last_metrics = m
+            self._metrics_history.append(m.cpu_pct)
+            if len(self._metrics_history) > 30:
+                self._metrics_history.pop(0)
+            return m
+            
+        return None

@@ -41,9 +41,15 @@ homepilot --version    # Show version
 | Key     | Action                |
 | ------- | --------------------- |
 | `d`     | Deploy selected app   |
+| `m`     | Migrate selected app  |
 | `c`     | Configure selected    |
 | `l`     | View logs             |
+| `s`     | Stop / Start resource |
 | `a`     | Add new resource      |
+| `n`     | Registry browser      |
+| `x`     | Delete app / resource |
+| `h`     | Manage servers        |
+| `i`     | Import config         |
 | `r`     | Refresh status        |
 | `Enter` | View resource details |
 | `Esc`   | Go back               |

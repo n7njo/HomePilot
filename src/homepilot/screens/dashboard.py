@@ -23,7 +23,7 @@ _TYPE_LABELS: dict[ResourceType, str] = {
     ResourceType.APP: "App",
 }
 
-SERVER_COLUMNS = ("Server", "Address", "Status", "Ready", "Apps")
+SERVER_COLUMNS = ("Server", "Address", "Status", "Ready", "Apps", "CPU", "RAM", "Disk")
 
 
 class DashboardScreen(Screen):
@@ -74,6 +74,7 @@ class DashboardScreen(Screen):
         Binding("a", "add_resource", "Add", show=True, priority=True),
         Binding("n", "registry_deploy", "Registry", show=True, priority=True),
         Binding("x", "delete_app", "Delete", show=True, priority=True),
+        Binding("m", "migrate_selected", "Migrate", show=True, priority=True),
         Binding("h", "manage_hosts", "Servers", show=True, priority=True),
         Binding("r", "refresh_status", "Refresh", show=True, priority=True),
         Binding("enter", "view_detail", "Detail", show=True, priority=True),
@@ -135,6 +136,7 @@ class DashboardScreen(Screen):
         self._populate_server_panel()
         self._connect_and_refresh()
         self.set_interval(5, self._refresh_in_background)
+        self.set_interval(2, self._refresh_metrics_in_background)
 
     # -- Initial population (config only, no network) ------------------------
 
@@ -171,6 +173,23 @@ class DashboardScreen(Screen):
     @work(thread=True)
     def _refresh_in_background(self) -> None:
         self._do_refresh()
+
+    @work(thread=True)
+    def _refresh_metrics_in_background(self) -> None:
+        self._do_metrics_refresh()
+
+    def _do_metrics_refresh(self) -> None:
+        """Fetch host metrics from all providers (runs in background thread)."""
+        for provider in self._registry.providers.values():
+            try:
+                provider.get_metrics() # This updates the internal .last_metrics
+            except Exception:
+                pass
+        
+        # Re-render server panel with latest cached metrics
+        self.app.call_from_thread(
+            self._rebuild_server_panel, list(self._resources.values())
+        )
 
     def _do_bootstrap_checks(self) -> None:
         """Check bootstrap status for each host (runs in background thread)."""
@@ -222,6 +241,22 @@ class DashboardScreen(Screen):
 
     def _rebuild_resource_table(self, resources: list[Resource]) -> None:
         table = self.query_one("#resource-table", DataTable)
+
+        # Capture current selection by key
+        selected_row_key = None
+        if table.cursor_row is not None:
+            try:
+                selected_row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
+            except Exception:
+                pass
+
+        # BUILD LIVE SET BEFORE MODIFICATION
+        # We track both the raw ID and the raw name to ensure we match apps in config
+        live_identities = set()
+        for r in resources:
+            live_identities.add(r.id)
+            live_identities.add(r.name)
+
         table.clear()
         self._resources.clear()
 
@@ -240,43 +275,86 @@ class DashboardScreen(Screen):
                 HealthStatus.UNHEALTHY: "💔",
             }.get(r.health, "")
 
+            # Determine reachable host for display
+            app_cfg = self._config.apps.get(r.name)
+            if app_cfg is None:
+                for cfg in self._config.apps.values():
+                    if cfg.deploy.container_name == r.name:
+                        app_cfg = cfg
+                        break
+            
+            reachable_host = r.host
+            if app_cfg and app_cfg.public_host:
+                reachable_host = app_cfg.public_host
+            elif r.address == "127.0.0.1":
+                reachable_host = "localhost"
+
             port_col = (
-                f"{r.protocol}://{r.host}:{r.port}"
+                f"{r.protocol}://{reachable_host}:{r.port}"
                 if r.port else "—"
             )
             health_col = (
                 f"{health_icon} {r.health.value}" if r.health.value != "Unknown" else "—"
             )
 
+            # Extract commit hash from history for the "Deploy" column
+            deploy_status = self._deploy_readiness(r)
+            if app_cfg and app_cfg.history:
+                for event in reversed(app_cfg.history):
+                    if event.event_type == "deployed":
+                        commit = event.details.get("commit_hash", "")
+                        if commit:
+                            deploy_status = f"#{commit} {deploy_status}"
+                        break
+
+            # Source tag
+            source_tag = "[blue][M][/blue]" if r.managed else "[yellow][D][/yellow]"
+
             table.add_row(
                 r.provider_name,
-                r.name,
+                f"{source_tag} {r.name}",
                 type_label,
                 f"{status_icon} {r.status.value}",
                 health_col,
                 port_col,
                 r.uptime or "—",
                 r.image or "",
-                self._deploy_readiness(r),
+                deploy_status,
                 key=rkey,
             )
 
         # Add configured apps that have no matching live resource (e.g. not yet deployed)
-        live_names = {r.name for r in resources} | {r.id for r in resources}
         for name, app_cfg in self._config.apps.items():
             container = app_cfg.deploy.container_name
-            if name in live_names or container in live_names:
+            if name in live_identities or container in live_identities:
                 continue
             host_key = app_cfg.host or next(iter(self._config.hosts), "")
             port = str(app_cfg.deploy.host_port) if app_cfg.deploy.host_port else "—"
             image = f"{app_cfg.deploy.image_name}:latest" if app_cfg.deploy.image_name else ""
             rkey = f"{host_key}:{name}"
+
+            deploy_status = self._deploy_readiness_from_config(app_cfg)
+            if app_cfg.history:
+                for event in reversed(app_cfg.history):
+                    if event.event_type == "deployed":
+                        commit = event.details.get("commit_hash", "")
+                        if commit:
+                            deploy_status = f"#{commit} {deploy_status}"
+                        break
+
             table.add_row(
                 host_key, name, "Docker", "⚪ Not deployed",
                 "—", port, "—", image,
-                self._deploy_readiness_from_config(app_cfg),
+                deploy_status,
                 key=rkey,
             )
+
+        # Restore selection
+        if selected_row_key:
+            try:
+                table.move_cursor(row=table.get_row_index(selected_row_key))
+            except Exception:
+                pass
 
     def _deploy_readiness_from_config(self, app_cfg) -> str:
         from homepilot.models import ProxmoxHostConfig
@@ -301,9 +379,23 @@ class DashboardScreen(Screen):
             provider = self._registry.get_provider(key)
             connected = provider is not None and provider.is_connected()
             status = "🟢 Online" if connected else "🔴 Offline"
+            
             ready = getattr(provider, "bootstrap_status", "—") if provider else "—"
+            if provider and getattr(provider, "using_netdata", False) and connected:
+                ready = f"{ready} (N)"
+
             app_count = str(counts.get(key, 0))
-            srv.add_row(key, host.host, status, ready, app_count, key=key)
+            
+            cpu, ram, disk = "—", "—", "—"
+            if provider and provider.last_metrics:
+                m = provider.last_metrics
+                from homepilot.providers.base import render_sparkline
+                spark = render_sparkline(provider.metrics_history)
+                cpu = f"{spark} {m.cpu_pct:.1f}%"
+                ram = f"{m.ram_pct:.1f}%"
+                disk = f"{m.disk_pct:.1f}%"
+
+            srv.add_row(key, host.host, status, ready, app_count, cpu, ram, disk, key=key)
 
     def _update_overview(self, resources: list[Resource]) -> None:
         """Refresh the left-hand overview stats panel."""
@@ -338,14 +430,10 @@ class DashboardScreen(Screen):
         if table.cursor_row is None:
             return None
         try:
-            row_data = table.get_row_at(table.cursor_row)
-            if not row_data:
-                return None
-            provider_name = str(row_data[0])
-            resource_name = str(row_data[1])
-            for rkey, r in self._resources.items():
-                if r.provider_name == provider_name and r.name == resource_name:
-                    return r
+            # Use coordinate_to_cell_key to get the RowKey directly
+            row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
+            # RowKey.value is the string we use in self._resources
+            return self._resources.get(str(row_key.value))
         except Exception:
             pass
         return None
@@ -465,8 +553,22 @@ class DashboardScreen(Screen):
         if name:
             from homepilot.screens.delete_app import DeleteAppScreen
             self.app.push_screen(DeleteAppScreen(self._config, self._registry, name))
+            return
+
+        r = self._get_selected_resource()
+        if r:
+            from homepilot.screens.cleanup_resource import CleanupResourceScreen
+            self.app.push_screen(CleanupResourceScreen(self._config, self._registry, r))
         else:
-            self.notify("Select a HomePilot-managed app to delete.", severity="warning", timeout=3)
+            self.notify("Select an app or resource to delete.", severity="warning", timeout=3)
+
+    def action_migrate_selected(self) -> None:
+        name = self._get_selected_app_name()
+        if name:
+            from homepilot.screens.migrate import MigrateScreen
+            self.app.push_screen(MigrateScreen(self._config, self._registry, name))
+        else:
+            self.notify("Select a HomePilot-managed app to migrate.", severity="warning", timeout=3)
 
     def action_manage_hosts(self) -> None:
         from homepilot.screens.host_manager import HostManagerScreen

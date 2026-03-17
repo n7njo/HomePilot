@@ -7,10 +7,11 @@ The TrueNAS provider manages Docker containers and TrueNAS Custom Apps over SSH.
 ```
 TrueNASProvider
     ├── SSHService     → paramiko SSH connection
-    └── TrueNASService → docker + midclt commands over SSH
+    ├── TrueNASService → docker + midclt commands over SSH
+    └── NetdataService → host metrics (CPU, RAM, Disk)
 ```
 
-The provider connects to TrueNAS via SSH using `paramiko`, then runs Docker and `midclt` commands remotely to list containers, start/stop apps, stream logs, and deploy images.
+The provider connects to TrueNAS via SSH using `paramiko`, then runs Docker and `midclt` commands remotely to list containers, start/stop apps, stream logs, and deploy images. Real-time metrics are fetched via Netdata (if enabled) or fallback SSH commands.
 
 ## Config Fields
 
@@ -20,6 +21,8 @@ hosts:
     type: truenas
     host: truenas.local # hostname or IP
     user: neil # SSH user
+    enable_netdata: true # enable sparklines in TUI
+    netdata_port: 19999
     ssh_key: "" # path to SSH key (empty = default)
     docker_cmd: sudo docker # Docker CLI prefix
     midclt_cmd: sudo -i midclt call # TrueNAS middleware CLI
@@ -53,6 +56,7 @@ The deploy workflow (triggered by `homepilot deploy <app>` or the `d` key in the
 - **start** — starts a TrueNAS Custom App (via `midclt`) or Docker container
 - **stop** — stops the app or container
 - **restart** — stop + start
-- **remove** — stops and removes the Docker container
+- **remove** — stops and removes the Docker container (Cleanup workflow for unmanaged resources)
+- **migrate** — moves the app to another host while preserving volumes
 - **logs** — fetches the last N lines of container logs
 - **status** — queries current container state

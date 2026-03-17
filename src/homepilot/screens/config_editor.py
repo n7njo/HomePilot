@@ -17,7 +17,7 @@ from textual.widgets import (
 )
 
 from homepilot.config import save_config, validate_config
-from homepilot.models import HomePilotConfig, PortMode, SourceType
+from homepilot.models import HomePilotConfig, PortMode, SourceType, AccessLevel, NetworkMode, HistoryEventType, AppHistoryEvent
 
 
 class ConfigEditorScreen(Screen):
@@ -49,6 +49,10 @@ class ConfigEditorScreen(Screen):
     }
     ConfigEditorScreen Select {
         background: $surface;
+        border: tall $primary 40%;
+    }
+    ConfigEditorScreen Select:focus {
+        border: tall $primary;
     }
     ConfigEditorScreen TextArea {
         background: $surface;
@@ -129,6 +133,20 @@ class ConfigEditorScreen(Screen):
                 value=app.deploy.port_mode.value,
                 id="port-mode",
             ),
+            Label("  Access Level:"),
+            Select(
+                [(a.value, a.value) for a in AccessLevel],
+                value=app.deploy.access_level.value,
+                id="access-level",
+            ),
+            Label("  Network Mode:"),
+            Select(
+                [(n.value, n.value) for n in NetworkMode],
+                value=app.deploy.network_mode.value,
+                id="network-mode",
+            ),
+            Label("  Public Host Override:"),
+            Input(value=app.public_host, id="public-host", placeholder="e.g. truenas.local"),
 
             # Health
             Label("  Health Check", classes="section-header"),
@@ -185,6 +203,11 @@ class ConfigEditorScreen(Screen):
             app.deploy.container_port = int(self.query_one("#container-port", Input).value or "5000")
             port_mode_val = self.query_one("#port-mode", Select).value
             app.deploy.port_mode = PortMode(port_mode_val)
+            access_level_val = self.query_one("#access-level", Select).value
+            app.deploy.access_level = AccessLevel(access_level_val)
+            network_mode_val = self.query_one("#network-mode", Select).value
+            app.deploy.network_mode = NetworkMode(network_mode_val)
+            app.public_host = self.query_one("#public-host", Input).value
 
             app.health.endpoint = self.query_one("#health-endpoint", Input).value
             app.health.expected_status = int(self.query_one("#health-status", Input).value or "200")
@@ -217,6 +240,16 @@ class ConfigEditorScreen(Screen):
                 return
 
             save_config(self._config)
+
+            # Record config change in history
+            from datetime import datetime, timezone
+            app.history.append(AppHistoryEvent(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                event_type=HistoryEventType.CONFIG_CHANGED,
+                message="Configuration updated via editor",
+            ))
+            save_config(self._config)  # Save again with history
+
             status.update("[green]✅ Saved[/green]")
 
         except ValueError as exc:

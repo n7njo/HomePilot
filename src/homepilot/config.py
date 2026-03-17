@@ -16,6 +16,10 @@ from homepilot.models import (
     HomePilotConfig,
     HealthConfig,
     PortMode,
+    AccessLevel,
+    NetworkMode,
+    HistoryEventType,
+    AppHistoryEvent,
     ProxmoxHostConfig,
     ServerConfig,
     SourceConfig,
@@ -91,10 +95,14 @@ def _default_config() -> HomePilotConfig:
 
 def _host_to_dict(host: HostConfig) -> dict[str, Any]:
     """Serialise a host config to a dict."""
+    base = {
+        "host": host.host,
+        "enable_netdata": host.enable_netdata,
+        "netdata_port": host.netdata_port,
+    }
     if isinstance(host, TrueNASHostConfig):
-        return {
+        base.update({
             "type": "truenas",
-            "host": host.host,
             "user": host.user,
             "admin_user": host.admin_user,
             "ssh_key": host.ssh_key,
@@ -104,18 +112,19 @@ def _host_to_dict(host: HostConfig) -> dict[str, Any]:
             "backup_dir": host.backup_dir,
             "dynamic_port_range_start": host.dynamic_port_range_start,
             "dynamic_port_range_end": host.dynamic_port_range_end,
-        }
+        })
+        return base
     if isinstance(host, ProxmoxHostConfig):
-        return {
+        base.update({
             "type": "proxmox",
-            "host": host.host,
             "token_id": host.token_id,
             "token_secret": host.token_secret,
             "token_source": host.token_source,
             "verify_ssl": host.verify_ssl,
             "ssh_user": host.ssh_user,
             "ssh_key": host.ssh_key,
-        }
+        })
+        return base
     return {"type": host.type, "host": host.host}
 
 
@@ -142,6 +151,8 @@ def _app_to_dict(app: AppConfig) -> dict[str, Any]:
             "host_port": app.deploy.host_port,
             "container_port": app.deploy.container_port,
             "port_mode": app.deploy.port_mode.value,
+            "access_level": app.deploy.access_level.value,
+            "network_mode": app.deploy.network_mode.value,
         },
         "health": {
             "endpoint": app.health.endpoint,
@@ -153,7 +164,17 @@ def _app_to_dict(app: AppConfig) -> dict[str, Any]:
             for v in app.volumes
         ],
         "env": dict(app.env),
+        "public_host": app.public_host,
         "last_deployed": app.last_deployed,
+        "history": [
+            {
+                "timestamp": e.timestamp,
+                "event_type": e.event_type.value,
+                "message": e.message,
+                "details": dict(e.details),
+            }
+            for e in app.history
+        ],
     })
     return d
 
@@ -177,11 +198,15 @@ def config_to_dict(config: HomePilotConfig) -> dict[str, Any]:
 def _parse_host(name: str, data: dict[str, Any]) -> HostConfig:
     """Parse a host config dict into the appropriate HostConfig subclass."""
     host_type = data.get("type", "truenas")
+    enable_nd = data.get("enable_netdata", True)
+    nd_port = data.get("netdata_port", 19999)
 
     if host_type == "truenas":
         return TrueNASHostConfig(
             type="truenas",
             host=data.get("host", "truenas.local"),
+            enable_netdata=enable_nd,
+            netdata_port=nd_port,
             user=data.get("user", "neil"),
             admin_user=data.get("admin_user", ""),
             ssh_key=data.get("ssh_key", ""),
@@ -196,6 +221,8 @@ def _parse_host(name: str, data: dict[str, Any]) -> HostConfig:
         return ProxmoxHostConfig(
             type="proxmox",
             host=data.get("host", ""),
+            enable_netdata=enable_nd,
+            netdata_port=nd_port,
             token_id=data.get("token_id", ""),
             token_secret=data.get("token_secret", ""),
             token_source=data.get("token_source", "env"),
@@ -204,7 +231,12 @@ def _parse_host(name: str, data: dict[str, Any]) -> HostConfig:
             ssh_key=data.get("ssh_key", ""),
         )
     else:
-        return HostConfig(type=host_type, host=data.get("host", ""))
+        return HostConfig(
+            type=host_type,
+            host=data.get("host", ""),
+            enable_netdata=enable_nd,
+            netdata_port=nd_port,
+        )
 
 
 def _parse_app(name: str, data: dict[str, Any]) -> AppConfig:
@@ -236,6 +268,8 @@ def _parse_app(name: str, data: dict[str, Any]) -> AppConfig:
             host_port=int(dep.get("host_port", 0)),
             container_port=int(dep.get("container_port", 5000)),
             port_mode=PortMode(dep.get("port_mode", "fixed")),
+            access_level=AccessLevel(dep.get("access_level", "public")),
+            network_mode=NetworkMode(dep.get("network_mode", "bridge")),
         ),
         health=HealthConfig(
             endpoint=hlth.get("endpoint", "/api/health"),
@@ -247,7 +281,17 @@ def _parse_app(name: str, data: dict[str, Any]) -> AppConfig:
             for v in vols
         ],
         env={str(k): str(v) for k, v in env.items()},
+        public_host=data.get("public_host", ""),
         last_deployed=data.get("last_deployed", ""),
+        history=[
+            AppHistoryEvent(
+                timestamp=e.get("timestamp", ""),
+                event_type=HistoryEventType(e.get("event_type", "config_changed")),
+                message=e.get("message", ""),
+                details=e.get("details", {}),
+            )
+            for e in data.get("history", [])
+        ],
     )
 
 

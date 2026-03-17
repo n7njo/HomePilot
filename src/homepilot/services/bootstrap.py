@@ -74,6 +74,8 @@ systemctl enable docker
 systemctl start docker
 """
 
+_NETDATA_INSTALL_COMMAND = "wget -O /tmp/netdata-kickstart.sh https://get.netdata.cloud/kickstart.sh && sh /tmp/netdata-kickstart.sh --non-interactive"
+
 
 class _SkipStep(Exception):
     pass
@@ -159,6 +161,7 @@ class BootstrapService:
             DeployStep("connect", f"Connect to {self._host.host} as {self._root_user}"),
             DeployStep("check_os", "Check OS compatibility"),
             DeployStep("install_docker", "Install Docker CE (if missing)"),
+            DeployStep("install_netdata", "Install Netdata monitoring (optional)"),
             DeployStep("create_user", f"Create '{HOMEPILOT_USER}' system user"),
             DeployStep("setup_ssh", f"Authorise SSH key for '{HOMEPILOT_USER}'"),
             DeployStep("setup_dirs", f"Create {HOMEPILOT_DIR}/ directory tree"),
@@ -171,6 +174,7 @@ class BootstrapService:
             "connect": self._step_connect,
             "check_os": self._step_check_os,
             "install_docker": self._step_install_docker,
+            "install_netdata": self._step_install_netdata,
             "create_user": self._step_create_user,
             "setup_ssh": self._step_setup_ssh,
             "setup_dirs": self._step_setup_dirs,
@@ -219,6 +223,23 @@ class BootstrapService:
 
         out, _, _ = self._run("docker --version")
         return f"Installed: {out.strip()}"
+
+    def _step_install_netdata(self) -> str:
+        if not self._host.enable_netdata:
+            raise _SkipStep("Netdata monitoring disabled in config")
+
+        _, _, code = self._run("netdata -V")
+        if code == 0:
+            raise _SkipStep("Netdata already installed")
+
+        self._emit("Installing Netdata — this may take a minute…")
+        # Netdata kickstart script is the standard way to install on most Linux distros
+        _, err, code = self._run_stream(_NETDATA_INSTALL_COMMAND, timeout=600)
+        if code != 0:
+            logger.warning("Netdata installation failed: %s", err)
+            return f"Installation failed (non-fatal): {err.strip()[:50]}…"
+
+        return "Netdata installed and started"
 
     def _step_create_user(self) -> str:
         # Check if user already exists
@@ -405,6 +426,7 @@ class TrueNASBootstrapService:
             DeployStep("create_user", f"Create '{HOMEPILOT_USER}' user via midclt"),
             DeployStep("setup_ssh", f"Authorise SSH key for '{HOMEPILOT_USER}'"),
             DeployStep("setup_sudo", f"Grant '{HOMEPILOT_USER}' passwordless sudo for docker"),
+            DeployStep("install_netdata", "Install Netdata monitoring (optional)"),
             DeployStep("setup_dirs", "Create HomePilot state directory"),
             DeployStep("write_state", "Write initial state file"),
             DeployStep("verify", f"Verify '{HOMEPILOT_USER}' can SSH and run docker"),
@@ -416,6 +438,7 @@ class TrueNASBootstrapService:
             "create_user": self._step_create_user,
             "setup_ssh": self._step_setup_ssh,
             "setup_sudo": self._step_setup_sudo,
+            "install_netdata": self._step_install_netdata,
             "setup_dirs": self._step_setup_dirs,
             "write_state": self._step_write_state,
             "verify": self._step_verify,
@@ -576,6 +599,22 @@ class TrueNASBootstrapService:
         if code != 0:
             raise RuntimeError(f"midclt user.update (sudo_commands_nopasswd) failed: {err}")
         return f"'{HOMEPILOT_USER}' may run {docker_path} without password (via TrueNAS middleware)"
+
+    def _step_install_netdata(self) -> str:
+        if not self._host.enable_netdata:
+            raise _SkipStep("Netdata monitoring disabled in config")
+
+        _, _, code = self._run("netdata -V")
+        if code == 0:
+            raise _SkipStep("Netdata already installed")
+
+        self._emit("Installing Netdata on TrueNAS SCALE…")
+        # TrueNAS SCALE is Debian-based, so kickstart works.
+        _, err, code = self._run_stream(_NETDATA_INSTALL_COMMAND, timeout=600)
+        if code != 0:
+            return f"Installation failed (non-fatal): {err.strip()[:50]}…"
+
+        return "Netdata installed and started"
 
     def _step_setup_dirs(self) -> str:
         state_dir = self._state_dir()

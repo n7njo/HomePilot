@@ -36,10 +36,10 @@ class ProviderRegistry:
         for key, host_cfg in self._config.hosts.items():
             if isinstance(host_cfg, TrueNASHostConfig):
                 from homepilot.providers.truenas import TrueNASProvider
-                self._providers[key] = TrueNASProvider(key, host_cfg)
+                self._providers[key] = TrueNASProvider(key, host_cfg, self._config)
             elif isinstance(host_cfg, ProxmoxHostConfig):
                 from homepilot.providers.proxmox import ProxmoxProvider
-                self._providers[key] = ProxmoxProvider(key, host_cfg)
+                self._providers[key] = ProxmoxProvider(key, host_cfg, self._config)
             else:
                 logger.warning("Unknown host type for '%s': %s", key, host_cfg.type)
 
@@ -76,10 +76,10 @@ class ProviderRegistry:
         from homepilot.models import ProxmoxHostConfig, TrueNASHostConfig
         if isinstance(host_cfg, TrueNASHostConfig):
             from homepilot.providers.truenas import TrueNASProvider
-            self._providers[key] = TrueNASProvider(key, host_cfg)
+            self._providers[key] = TrueNASProvider(key, host_cfg, self._config)
         elif isinstance(host_cfg, ProxmoxHostConfig):
             from homepilot.providers.proxmox import ProxmoxProvider
-            self._providers[key] = ProxmoxProvider(key, host_cfg)
+            self._providers[key] = ProxmoxProvider(key, host_cfg, self._config)
         else:
             logger.warning("Unknown host type for '%s': %s", key, getattr(host_cfg, "type", "?"))
 

@@ -15,6 +15,7 @@ from textual.widgets import (
     Label,
     Select,
     Static,
+    TextArea,
 )
 
 from homepilot.config import save_config, validate_config
@@ -25,6 +26,10 @@ from homepilot.models import (
     HomePilotConfig,
     HealthConfig,
     PortMode,
+    AccessLevel,
+    NetworkMode,
+    HistoryEventType,
+    AppHistoryEvent,
     SourceConfig,
     SourceType,
     TrueNASHostConfig,
@@ -35,6 +40,51 @@ from homepilot.providers import ProviderRegistry
 
 class AddResourceScreen(Screen):
     """Wizard to register a new application or resource."""
+
+    DEFAULT_CSS = """
+    AddResourceScreen #wizard-body {
+        padding: 0 2;
+    }
+    AddResourceScreen .section-header {
+        text-style: bold;
+        color: $accent;
+        padding: 1 0 0 0;
+    }
+    AddResourceScreen Label {
+        color: $text-muted;
+        padding: 1 0 0 0;
+    }
+    AddResourceScreen Input {
+        background: $surface;
+        border: tall $primary 40%;
+        color: $text;
+    }
+    AddResourceScreen Input:focus {
+        border: tall $primary;
+    }
+    AddResourceScreen Input.-invalid {
+        border: tall $error;
+    }
+    AddResourceScreen Select {
+        background: $surface;
+        border: tall $primary 40%;
+    }
+    AddResourceScreen Select:focus {
+        border: tall $primary;
+    }
+    AddResourceScreen TextArea {
+        background: $surface;
+        border: tall $primary 40%;
+        color: $text;
+        height: 6;
+    }
+    AddResourceScreen TextArea:focus {
+        border: tall $primary;
+    }
+    AddResourceScreen #wizard-status {
+        padding: 0 0 1 0;
+    }
+    """
 
     BINDINGS = [
         Binding("ctrl+s", "save", "Save", show=True),
@@ -60,16 +110,17 @@ class AddResourceScreen(Screen):
 
         yield Header()
         yield VerticalScroll(
-            Label("\n  Add New Resource\n", id="wizard-title"),
+            Label(f"\n  Add New Resource\n", id="wizard-title"),
             Static("", id="wizard-status"),
 
-            Label("  Target Host:"),
+            Label("  Target Host:", classes="section-header"),
             Select(host_options, value=default_host, id="host-select"),
 
-            Label("\n  Resource Name (lowercase, dashes allowed):"),
+            Label("  Basic Info", classes="section-header"),
+            Label("  Resource Name (lowercase, dashes allowed):"),
             Input(value=p.get("app_name", ""), id="app-name", placeholder="my-app"),
 
-            Label("\n  Source:"),
+            Label("  Source", classes="section-header"),
             Label("  Source Type:"),
             Select(
                 [(t.value, t.value) for t in SourceType],
@@ -83,13 +134,13 @@ class AddResourceScreen(Screen):
             Label("  Git Branch:"),
             Input(value="main", id="git-branch"),
 
-            Label("\n  Build:"),
+            Label("  Build", classes="section-header"),
             Label("  Dockerfile:"),
             Input(value="Dockerfile", id="dockerfile"),
             Label("  Platform:"),
             Input(value="linux/amd64", id="platform"),
 
-            Label("\n  Deployment:"),
+            Label("  Deployment", classes="section-header"),
             Label("  Image Name:"),
             Input(value=p.get("image_name", ""), id="image-name", placeholder="my-app"),
             Label("  Container Name:"),
@@ -97,23 +148,39 @@ class AddResourceScreen(Screen):
             Label("  Host Port (0 = dynamic):"),
             Input(value="0", id="host-port"),
             Label("  Container Port:"),
-            Input(value="5000", id="container-port"),
+            Input(value=p.get("container_port", "5000"), id="container-port"),
             Label("  Port Mode:"),
             Select(
                 [(m.value, m.value) for m in PortMode],
                 value="dynamic",
                 id="port-mode",
             ),
+            Label("  Access Level:"),
+            Select(
+                [(a.value, a.value) for a in AccessLevel],
+                value=AccessLevel.PUBLIC.value,
+                id="access-level",
+            ),
+            Label("  Network Mode:"),
+            Select(
+                [(n.value, n.value) for n in NetworkMode],
+                value=NetworkMode.BRIDGE.value,
+                id="network-mode",
+            ),
+            Label("  Public Host Override:"),
+            Input(id="public-host", placeholder="e.g. truenas.local"),
 
-            Label("\n  Health Check:"),
+            Label("  Health Check", classes="section-header"),
             Label("  Endpoint:"),
-            Input(value="/api/health", id="health-endpoint"),
+            Input(value=p.get("health_endpoint", "/api/health"), id="health-endpoint"),
 
-            Label("\n  Volume Mount (optional):"),
-            Label("  Host Path:"),
-            Input(id="vol-host", placeholder="/mnt/tank/apps/my-app/data"),
-            Label("  Container Path:"),
-            Input(value="/app/data", id="vol-container"),
+            Label("  Volumes", classes="section-header"),
+            Label("  One host:container or host:container:mode per line:"),
+            TextArea(id="volumes"),
+
+            Label("  Environment Variables", classes="section-header"),
+            Label("  One KEY=VALUE per line:"),
+            TextArea(id="env-vars"),
 
             Static("", id="detect-status"),
             id="wizard-body",
@@ -172,9 +239,9 @@ class AddResourceScreen(Screen):
             if (src / compose_name).exists():
                 messages.append(f"{compose_name} found")
 
-        vol_host = self.query_one("#vol-host", Input)
-        if not vol_host.value:
-            vol_host.value = f"/mnt/tank/apps/{name}/data"
+        vol_text = self.query_one("#volumes", TextArea)
+        if not vol_text.text:
+            vol_text.load_text(f"/mnt/tank/apps/{name}/data:/app/data")
 
         status.update("[green]" + " │ ".join(messages) + "[/green]")
 
@@ -193,13 +260,28 @@ class AddResourceScreen(Screen):
         try:
             source_type = SourceType(self.query_one("#source-type", Select).value)
             port_mode = PortMode(self.query_one("#port-mode", Select).value)
+            access_level = AccessLevel(self.query_one("#access-level", Select).value)
+            network_mode = NetworkMode(self.query_one("#network-mode", Select).value)
             host_port = int(self.query_one("#host-port", Input).value or "0")
+            public_host = self.query_one("#public-host", Input).value.strip()
 
             volumes: list[VolumeMount] = []
-            vol_host = self.query_one("#vol-host", Input).value.strip()
-            vol_container = self.query_one("#vol-container", Input).value.strip()
-            if vol_host and vol_container:
-                volumes.append(VolumeMount(host=vol_host, container=vol_container))
+            for line in self.query_one("#volumes", TextArea).text.splitlines():
+                line = line.strip()
+                if ":" in line:
+                    parts = line.split(":", 2)
+                    host = parts[0].strip()
+                    container = parts[1].strip() if len(parts) > 1 else ""
+                    mode = parts[2].strip() if len(parts) > 2 else ""
+                    if host and container:
+                        volumes.append(VolumeMount(host=host, container=container, mode=mode))
+
+            env: dict[str, str] = {}
+            for line in self.query_one("#env-vars", TextArea).text.splitlines():
+                line = line.strip()
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    env[k.strip()] = v.strip()
 
             app = AppConfig(
                 name=name,
@@ -220,12 +302,24 @@ class AddResourceScreen(Screen):
                     host_port=host_port,
                     container_port=int(self.query_one("#container-port", Input).value or "5000"),
                     port_mode=port_mode,
+                    access_level=access_level,
+                    network_mode=network_mode,
                 ),
                 health=HealthConfig(
                     endpoint=self.query_one("#health-endpoint", Input).value.strip(),
                 ),
                 volumes=volumes,
+                env=env,
+                public_host=public_host,
             )
+
+            # Record creation in history
+            from datetime import datetime, timezone
+            app.history.append(AppHistoryEvent(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                event_type=HistoryEventType.CREATED,
+                message=f"Application created on host {host_key}",
+            ))
 
             self._config.apps[name] = app
 
