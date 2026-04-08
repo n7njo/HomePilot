@@ -197,7 +197,7 @@ class Deployer:
         if not src.exists():
             raise RuntimeError(f"Source path does not exist: {src}")
 
-        dockerfile = src / self._app.build.dockerfile
+        dockerfile = src / self._app.build.context / self._app.build.dockerfile
         if not dockerfile.exists():
             raise RuntimeError(f"Dockerfile not found: {dockerfile}")
 
@@ -424,7 +424,10 @@ class Deployer:
             self._line_cb(f"Transfer: {pct:.0f}% ({transferred}/{total} bytes)")
 
     def _get_commit_hash(self) -> str | None:
-        """Attempt to get the current short commit hash from the source."""
+        """Attempt to get the current version/commit hash from the source.
+        
+        Prioritises version.json in the build context, falling back to git.
+        """
         if self._is_image_only():
             return None
 
@@ -432,6 +435,22 @@ class Deployer:
         if not src or not src.exists():
             return None
 
+        # 1. Try to read version.json in the build context
+        context_dir = src / self._app.build.context
+        version_json = context_dir / "version.json"
+        if version_json.exists():
+            try:
+                import json
+                with open(version_json, "r") as f:
+                    data = json.load(f)
+                    # Support both new 'version' (timestamp) and old 'hash'
+                    v = data.get("version") or data.get("hash")
+                    if v:
+                        return str(v)
+            except Exception as e:
+                logger.warning("Failed to read version.json at %s: %s", version_json, e)
+
+        # 2. Fall back to git rev-parse
         try:
             result = subprocess.run(
                 ["git", "rev-parse", "--short", "HEAD"],

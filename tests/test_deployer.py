@@ -80,3 +80,84 @@ class TestDeployerSteps:
         assert deployer.state is not None
         assert deployer.state.app_name == "test-app"
         assert deployer.state.finished_at is not None
+
+
+class TestDeployerVersion:
+    def test_get_commit_hash_with_version_json(self, tmp_path):
+        """Verify that version.json takes precedence over git."""
+        import json
+        from unittest.mock import patch
+        
+        server = ServerConfig()
+        # Create build context directory
+        context_dir = tmp_path / "solution_docs"
+        context_dir.mkdir()
+        
+        app = AppConfig(
+            name="homestead-docs",
+            source=SourceConfig(type=SourceType.LOCAL, path=str(tmp_path)),
+            build=BuildConfig(context="solution_docs"),
+            deploy=DeployConfig(image_name="homestead-docs"),
+        )
+        
+        # Create version.json with new format
+        version_data = {"version": "20260327130522"}
+        version_file = context_dir / "version.json"
+        with open(version_file, "w") as f:
+            json.dump(version_data, f)
+            
+        deployer = Deployer(server, app)
+        
+        with patch.object(Deployer, "_is_image_only", return_value=False):
+            v = deployer._get_commit_hash()
+            assert v == "20260327130522"
+
+    def test_get_commit_hash_with_old_version_json(self, tmp_path):
+        """Verify that old version.json format (hash field) is still supported."""
+        import json
+        from unittest.mock import patch
+        
+        server = ServerConfig()
+        context_dir = tmp_path / "solution_docs"
+        context_dir.mkdir()
+        
+        app = AppConfig(
+            name="homestead-docs",
+            source=SourceConfig(type=SourceType.LOCAL, path=str(tmp_path)),
+            build=BuildConfig(context="solution_docs"),
+            deploy=DeployConfig(image_name="homestead-docs"),
+        )
+        
+        # Create version.json with old format
+        version_data = {"hash": "cfeec9c"}
+        version_file = context_dir / "version.json"
+        with open(version_file, "w") as f:
+            json.dump(version_data, f)
+            
+        deployer = Deployer(server, app)
+        
+        with patch.object(Deployer, "_is_image_only", return_value=False):
+            v = deployer._get_commit_hash()
+            assert v == "cfeec9c"
+
+    def test_get_commit_hash_falls_back_to_git(self, tmp_path):
+        """Verify that it falls back to git if version.json is missing."""
+        import subprocess
+        from unittest.mock import MagicMock, patch
+        
+        server = ServerConfig()
+        app = AppConfig(
+            name="homestead-docs",
+            source=SourceConfig(type=SourceType.LOCAL, path=str(tmp_path)),
+            build=BuildConfig(context="solution_docs"),
+            deploy=DeployConfig(image_name="homestead-docs"),
+        )
+        
+        deployer = Deployer(server, app)
+        
+        with patch.object(Deployer, "_is_image_only", return_value=False):
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0, stdout="git-hash\n")
+                v = deployer._get_commit_hash()
+                assert v == "git-hash"
+                mock_run.assert_called_once()

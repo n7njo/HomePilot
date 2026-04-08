@@ -18,6 +18,7 @@ from homepilot.models import (
     BuildConfig,
     DeployConfig,
     HealthConfig,
+    HealthProtocol,
     HomePilotConfig,
     PortMode,
     AccessLevel,
@@ -172,7 +173,13 @@ class ImportConfigScreen(Screen):
             Input(id="public-host", placeholder="e.g. truenas.local"),
 
             Label("  Health Check", classes="section-header"),
-            Label("  Endpoint:"),
+            Label("  Protocol:"),
+            Select(
+                [(p.value, p.value) for p in HealthProtocol],
+                value=HealthProtocol.HTTP.value,
+                id="health-protocol",
+            ),
+            Label("  Endpoint (HTTP only):"),
             Input(value="/", id="health-endpoint"),
 
             Label("  Volumes", classes="section-header"),
@@ -274,6 +281,9 @@ class ImportConfigScreen(Screen):
             network_mode = NetworkMode(self.query_one("#network-mode", Select).value)
             public_host = self.query_one("#public-host", Input).value.strip()
 
+            health_proto_val = self.query_one("#health-protocol", Select).value
+            health_protocol = HealthProtocol(health_proto_val)
+
             volumes: list[VolumeMount] = []
             for line in self.query_one("#volumes", TextArea).text.splitlines():
                 line = line.strip()
@@ -318,6 +328,7 @@ class ImportConfigScreen(Screen):
                     network_mode=network_mode,
                 ),
                 health=HealthConfig(
+                    protocol=health_protocol,
                     endpoint=self.query_one("#health-endpoint", Input).value.strip() or "/",
                 ),
                 volumes=volumes,

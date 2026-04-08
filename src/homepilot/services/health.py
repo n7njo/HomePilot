@@ -10,7 +10,7 @@ from typing import Callable
 
 import httpx
 
-from homepilot.models import AppConfig, AppRuntimeInfo, HealthStatus, ServerConfig
+from homepilot.models import AppConfig, AppRuntimeInfo, HealthStatus, HealthProtocol, ServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,25 @@ async def check_health_async(
     return HealthStatus.UNHEALTHY, elapsed_ms
 
 
+async def check_tcp_health_async(host: str, port: int, timeout: float = 5) -> tuple[HealthStatus, float]:
+    """Perform a raw TCP connect test.
+
+    Returns (HealthStatus, response_time_ms).
+    """
+    start = time.monotonic()
+    try:
+        # attempt connection
+        conn = asyncio.open_connection(host, port)
+        reader, writer = await asyncio.wait_for(conn, timeout=timeout)
+        elapsed_ms = (time.monotonic() - start) * 1000
+        writer.close()
+        await writer.wait_closed()
+        return HealthStatus.HEALTHY, elapsed_ms
+    except (asyncio.TimeoutError, ConnectionRefusedError, OSError, Exception):
+        elapsed_ms = (time.monotonic() - start) * 1000
+        return HealthStatus.UNHEALTHY, elapsed_ms
+
+
 class HealthMonitor:
     """Periodically checks health of all registered apps.
 
@@ -92,7 +111,15 @@ class HealthMonitor:
         """Run health checks for all apps concurrently."""
         tasks = {}
         for name, app in self._apps.items():
-            if app.deploy.host_port:
+            if not app.deploy.host_port:
+                continue
+
+            if app.health.protocol == HealthProtocol.TCP:
+                tasks[name] = check_tcp_health_async(
+                    self._server.host,
+                    app.deploy.host_port,
+                )
+            else:
                 tasks[name] = check_health_async(
                     self._server.host,
                     app.deploy.host_port,
@@ -102,12 +129,16 @@ class HealthMonitor:
 
         results: dict[str, tuple[HealthStatus, float]] = {}
         for name, coro in tasks.items():
-            status, ms = await coro
-            results[name] = (status, ms)
-            now = datetime.now(timezone.utc)
-            self.results[name] = (status, ms, now)
-            if self._callback:
-                self._callback((name, status, ms))
+            try:
+                status, ms = await coro
+                results[name] = (status, ms)
+                now = datetime.now(timezone.utc)
+                self.results[name] = (status, ms, now)
+                if self._callback:
+                    self._callback((name, status, ms))
+            except Exception as exc:
+                logger.debug("Health check failed for %s: %s", name, exc)
+                results[name] = (HealthStatus.UNKNOWN, 0.0)
 
         return results
 

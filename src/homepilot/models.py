@@ -59,6 +59,13 @@ class HealthStatus(str, Enum):
     UNKNOWN = "Unknown"
 
 
+class HealthProtocol(str, Enum):
+    """How to verify an app's health."""
+
+    HTTP = "http"
+    TCP = "tcp"
+
+
 class DeployStepStatus(str, Enum):
     """Status of an individual deployment step."""
 
@@ -206,12 +213,15 @@ class DeployConfig:
     port_mode: PortMode = PortMode.FIXED
     access_level: AccessLevel = AccessLevel.PUBLIC
     network_mode: NetworkMode = NetworkMode.BRIDGE
+    cpu_limit: float = 0.0  # 0.0 = unlimited
+    memory_limit_mb: int = 0  # 0 = unlimited
 
 
 @dataclass
 class HealthConfig:
     """Health-check configuration."""
 
+    protocol: HealthProtocol = HealthProtocol.HTTP
     endpoint: str = "/api/health"
     expected_status: int = 200
     interval_seconds: int = 30

@@ -97,12 +97,16 @@ def detect_protocol(port: int, image: str = "") -> str:
 
 
 def render_sparkline(values: list[float], width: int = 8) -> str:
-    """Render a simple Unicode sparkline from a list of values (0-100)."""
+    """Render a simple Unicode sparkline from a list of values (0-100) with color."""
     if not values:
         return " " * width
 
     # Take the last 'width' values
     data = values[-width:]
+    
+    # Calculate average for coloring
+    avg = sum(data) / len(data) if data else 0.0
+    
     # Pad with spaces if not enough data
     if len(data) < width:
         data = ([0.0] * (width - len(data))) + data
@@ -110,10 +114,20 @@ def render_sparkline(values: list[float], width: int = 8) -> str:
     chars = " ▂▃▄▅▆▇█"
     line = ""
     for v in data:
-        # Map 0-100 to 0-7
         idx = min(int(v / 12.5), 7)
         line += chars[idx]
-    return line
+        
+    # Apply color based on average
+    if avg < 30:
+        color = "green"
+    elif avg < 60:
+        color = "yellow"
+    elif avg < 85:
+        color = "orange"
+    else:
+        color = "red"
+        
+    return f"[{color}]{line}[/]"
 
 
 @dataclass
@@ -188,11 +202,6 @@ class InfraProvider(Protocol):
     @property
     def provider_type(self) -> str:
         """Provider type string (e.g. 'truenas', 'proxmox')."""
-        ...
-
-    @property
-    def using_netdata(self) -> bool:
-        """Return True if currently using Netdata for metrics."""
         ...
 
     @property

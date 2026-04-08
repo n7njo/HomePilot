@@ -18,6 +18,7 @@ class HomePilotApp(App):
     SUB_TITLE = "Home Lab Manager"
 
     BINDINGS = [
+        Binding("q", "quit_app", "Quit", show=True, priority=True),
         Binding("t", "toggle_theme", "Theme", show=True, priority=True),
     ]
 
@@ -136,3 +137,7 @@ class HomePilotApp(App):
                     save_config(self._config)
 
         self.push_screen(ThemePickerScreen(), _apply)
+
+    def action_quit_app(self) -> None:
+        """Exit the application."""
+        self.exit()

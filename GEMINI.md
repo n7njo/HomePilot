@@ -72,6 +72,18 @@ pytest
     - Use `unittest.mock` and `@patch` to isolate services (like SSH or API calls) during testing.
     - CLI testing uses `click.testing.CliRunner`.
 
+## Deployment Nuances & Versioning
+
+- **Timestamp-Based Versioning:** Some applications (like `homestead-docs`) use a `version.json` file in their build context.
+    - `Deployer._get_commit_hash` prioritizes the `version` (timestamp) or `hash` field from this file over git commit hashes.
+    - This allows content-only updates to reflect a new version in the UI/History without necessarily requiring a new git commit if the source is local.
+- **Fresh Builds (No Cache):** The `DockerService.build_image` command uses `--no-cache` by default.
+    - This is critical for applications that `COPY .` in their `Dockerfile`. Without it, Docker may skip rebuilding layers if file metadata hasn't changed enough to trigger a cache bust, leading to stale content (like an old `version.json`) being served.
+- **Build Context & Dockerfile Paths:**
+    - The `Deployer` validates and builds using the `build.context` directory specified in `config.yaml`.
+    - It correctly resolves the `Dockerfile` path relative to this context (e.g., `src / context / dockerfile`).
+- **Nginx Caching:** For static site deployments, ensure `nginx.conf` includes `no-cache` headers for `version.json` (and `.html`/`.md`) to prevent the browser from showing stale version stamps.
+
 ## Key Directories
 
 - `src/homepilot/providers/`: Infrastructure-specific implementations.

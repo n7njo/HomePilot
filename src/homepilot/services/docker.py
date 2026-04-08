@@ -37,6 +37,7 @@ class DockerService:
         dockerfile = context_dir / build.dockerfile
         cmd = [
             "docker", "build",
+            "--no-cache",
             "--platform", build.platform,
             "-f", str(dockerfile),
             "-t", f"{tag}:latest",

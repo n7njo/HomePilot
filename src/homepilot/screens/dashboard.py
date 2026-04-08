@@ -67,8 +67,6 @@ class DashboardScreen(Screen):
 
     BINDINGS = [
         Binding("d", "deploy_selected", "Deploy", show=True, priority=True),
-        Binding("c", "configure_selected", "Configure", show=True, priority=True),
-        Binding("l", "logs_selected", "Logs", show=True, priority=True),
         Binding("s", "stop_start_selected", "Stop/Start", show=True, priority=True),
         Binding("i", "import_config", "Import Config", show=True, priority=True),
         Binding("a", "add_resource", "Add", show=True, priority=True),
@@ -78,7 +76,6 @@ class DashboardScreen(Screen):
         Binding("h", "manage_hosts", "Servers", show=True, priority=True),
         Binding("r", "refresh_status", "Refresh", show=True, priority=True),
         Binding("enter", "view_detail", "Detail", show=True, priority=True),
-        Binding("q", "quit_app", "Quit", show=True, priority=True),
     ]
 
     def __init__(
@@ -207,9 +204,12 @@ class DashboardScreen(Screen):
         """Fetch resources from all providers (runs in background thread)."""
         resources = self._registry.list_all_resources()
 
-        from homepilot.services.health import check_health_sync
+        from homepilot.services.health import check_health_sync, check_tcp_health_async
+        import asyncio
+        from homepilot.models import HealthProtocol
+
         for r in resources:
-            if r.resource_type == ResourceType.DOCKER_CONTAINER and r.port and r.protocol != "tcp":
+            if r.resource_type == ResourceType.DOCKER_CONTAINER and r.port:
                 try:
                     app_cfg = self._config.apps.get(r.name)
                     if app_cfg is None:
@@ -217,15 +217,26 @@ class DashboardScreen(Screen):
                             if cfg.deploy.container_name == r.name:
                                 app_cfg = cfg
                                 break
-                    endpoint = app_cfg.health.endpoint if app_cfg else "/api/health"
-                    if not endpoint:
-                        continue  # no endpoint configured — leave health as unknown
-                    result = check_health_sync(r.host, r.port, endpoint)
-                    if result == "Healthy":
-                        r.health = HealthStatus.HEALTHY
-                    elif result == "Unhealthy":
-                        r.health = HealthStatus.UNHEALTHY
-                    # "Unknown" → leave r.health as-is (unknown)
+                    
+                    protocol = app_cfg.health.protocol if app_cfg else HealthProtocol.HTTP
+                    
+                    if protocol == HealthProtocol.TCP:
+                        # Raw TCP connect test
+                        try:
+                            status, _ = asyncio.run(check_tcp_health_async(r.host, r.port, timeout=2))
+                            r.health = status
+                        except Exception:
+                            r.health = HealthStatus.UNHEALTHY
+                    else:
+                        # HTTP check
+                        endpoint = app_cfg.health.endpoint if app_cfg else "/api/health"
+                        if not endpoint:
+                            continue
+                        result = check_health_sync(r.host, r.port, endpoint)
+                        if result == "Healthy":
+                            r.health = HealthStatus.HEALTHY
+                        elif result == "Unhealthy":
+                            r.health = HealthStatus.UNHEALTHY
                 except Exception:
                     pass
 
@@ -381,8 +392,6 @@ class DashboardScreen(Screen):
             status = "🟢 Online" if connected else "🔴 Offline"
             
             ready = getattr(provider, "bootstrap_status", "—") if provider else "—"
-            if provider and getattr(provider, "using_netdata", False) and connected:
-                ready = f"{ready} (N)"
 
             app_count = str(counts.get(key, 0))
             
@@ -481,21 +490,6 @@ class DashboardScreen(Screen):
             from homepilot.screens.deploy import DeployScreen
             self.app.push_screen(DeployScreen(self._config, self._registry, name))
 
-    def action_configure_selected(self) -> None:
-        name = self._get_selected_app_name()
-        if name:
-            from homepilot.screens.config_editor import ConfigEditorScreen
-            self.app.push_screen(ConfigEditorScreen(self._config, name))
-        else:
-            r = self._get_selected_resource()
-            label = r.name if r else "this resource"
-            self.notify(
-                f"'{label}' is not a HomePilot-managed app.\nUse [bold]a[/bold] to add it first.",
-                title="No Config",
-                severity="warning",
-                timeout=4,
-            )
-
     def action_logs_selected(self) -> None:
         r = self._get_selected_resource()
         if r:
@@ -531,10 +525,10 @@ class DashboardScreen(Screen):
             return
         if self._get_selected_app_name():
             self.notify(
-                f"'{r.name}' is already in config. Use [bold]c[/bold] to edit it.",
+                f"'{r.name}' is already in config. Press [bold]Enter[/bold] then select the 'Configure' tab to edit.",
                 title="Already Managed",
                 severity="warning",
-                timeout=3,
+                timeout=4,
             )
             return
         from homepilot.screens.import_config import ImportConfigScreen
@@ -584,6 +578,3 @@ class DashboardScreen(Screen):
             self.app.push_screen(
                 ResourceDetailScreen(self._config, self._registry, r.provider_name, r.id)
             )
-
-    def action_quit_app(self) -> None:
-        self.app.exit()

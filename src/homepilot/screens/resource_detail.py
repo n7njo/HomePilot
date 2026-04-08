@@ -2,21 +2,35 @@
 
 from __future__ import annotations
 
-from textual import work
+from textual import work, on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
+from textual.containers import Vertical, VerticalScroll, Horizontal
 from textual.screen import Screen
 from textual.widgets import (
     Footer,
     Header,
+    Input,
     Label,
+    Select,
     Static,
     TabbedContent,
     TabPane,
+    TextArea,
 )
 
-from homepilot.models import HomePilotConfig
+from homepilot.config import save_config, validate_config
+from homepilot.models import (
+    HomePilotConfig,
+    PortMode,
+    SourceType,
+    AccessLevel,
+    NetworkMode,
+    HealthProtocol,
+    HistoryEventType,
+    AppHistoryEvent,
+    VolumeMount,
+)
 from homepilot.providers import ProviderRegistry
 from homepilot.providers.base import Resource, ResourceStatus, ResourceType
 from homepilot.widgets.log_viewer import LogViewer
@@ -25,7 +39,72 @@ from homepilot.widgets.log_viewer import LogViewer
 class ResourceDetailScreen(Screen):
     """Detail view for any infrastructure resource (Docker, VM, LXC)."""
 
+    DEFAULT_CSS = """
+    ResourceDetailScreen #config-form {
+        padding: 0 1;
+    }
+    ResourceDetailScreen .config-column {
+        width: 1fr;
+        padding: 0 2;
+        margin: 0 1;
+        border: round $primary 40%;
+        background: $surface;
+    }
+    ResourceDetailScreen .section-header {
+        text-style: bold;
+        color: $accent;
+        padding: 0 0;
+        margin-top: 0;
+        margin-bottom: 0;
+        border-bottom: solid $accent;
+    }
+    ResourceDetailScreen .field-row {
+        height: 2;
+        margin-bottom: 0;
+        padding: 0;
+        align: left middle;
+    }
+    ResourceDetailScreen .field-label {
+        width: 18;
+        color: $text-muted;
+        padding: 0 0 0 0;
+    }
+    ResourceDetailScreen .field-input {
+        width: 1fr;
+    }
+    ResourceDetailScreen Input, ResourceDetailScreen Select, ResourceDetailScreen TextArea {
+        background: $surface;
+        border: none;
+        color: $text;
+        margin: 0;
+        padding: 0 1;
+    }
+    ResourceDetailScreen Input {
+        height: 1;
+    }
+    ResourceDetailScreen Select {
+        height: 3;
+        border: none;
+    }
+    ResourceDetailScreen TextArea {
+        height: 5;
+        border: tall $primary 20%;
+    }
+    ResourceDetailScreen Input:focus, ResourceDetailScreen Select:focus, ResourceDetailScreen TextArea:focus {
+        background: $accent 20%;
+        color: $text;
+        border: none;
+    }
+    ResourceDetailScreen Select {
+        padding: 0 1;
+    }
+    ResourceDetailScreen #config-status {
+        padding: 0 0 1 1;
+    }
+    """
+
     BINDINGS = [
+        Binding("ctrl+s", "save_config", "Save Config", show=True),
         Binding("s", "start_resource", "Start", show=True),
         Binding("x", "stop_resource", "Stop", show=True),
         Binding("r", "restart_resource", "Restart", show=True),
@@ -61,15 +140,26 @@ class ResourceDetailScreen(Screen):
                     self._app_config = cfg
                     break
 
+        # Adjust initial tab if managed (Overview is removed)
+        if self._app_config and initial_tab == "overview":
+            self._initial_tab = "configure"
+        else:
+            self._initial_tab = initial_tab
+
     def compose(self) -> ComposeResult:
         display_name = self._app_config.name if self._app_config else self._resource_id
 
         yield Header()
         with TabbedContent(initial=self._initial_tab):
-            with TabPane("Overview", id="overview"):
-                yield VerticalScroll(
-                    Static(self._build_overview(), id="overview-content"),
-                )
+            if self._app_config:
+                with TabPane("Configure", id="configure"):
+                    with VerticalScroll(id="config-form"):
+                        yield from self._compose_config_fields()
+            else:
+                with TabPane("Overview", id="overview"):
+                    yield VerticalScroll(
+                        Static(self._build_overview(), id="overview-content"),
+                    )
             with TabPane("Logs", id="logs"):
                 yield LogViewer(id="log-viewer")
             with TabPane("History", id="history"):
@@ -86,6 +176,203 @@ class ResourceDetailScreen(Screen):
     def on_mount(self) -> None:
         if self._initial_tab == "logs":
             self._load_logs()
+
+    # ------------------------------------------------------------------
+    # Configuration
+    # ------------------------------------------------------------------
+
+    def _compose_config_fields(self) -> ComposeResult:
+        app = self._app_config
+        if not app:
+            return
+
+        host_options = [(k, k) for k in self._config.hosts]
+        # Ensure current host is in options to avoid Select crash
+        if app.host and app.host not in self._config.hosts:
+            host_options.append((app.host, f"{app.host} (unknown)"))
+
+        # Fetch current runtime info for summary
+        resource = None
+        if self._provider:
+            resource = self._provider.get_resource(self._resource_id)
+
+        yield Static("", id="config-status")
+
+        with Horizontal():
+            # --- Column 1 ---
+            with Vertical(classes="config-column"):
+                yield Label("Runtime Summary", classes="section-header")
+                if resource:
+                    with Horizontal(classes="field-row"):
+                        yield Label("Live Status", classes="field-label")
+                        yield Label(f"[bold]{resource.status.value}[/bold]", classes="field-input")
+                    with Horizontal(classes="field-row"):
+                        yield Label("Uptime", classes="field-label")
+                        yield Label(resource.uptime or "—", classes="field-input")
+                    if resource.resource_type in (ResourceType.VM, ResourceType.LXC_CONTAINER):
+                        with Horizontal(classes="field-row"):
+                            yield Label("Node / VMID", classes="field-label")
+                            yield Label(f"{resource.metadata.get('node', '—')} / {resource.metadata.get('vmid', '—')}", classes="field-input")
+                else:
+                    yield Label("  (Resource not currently active)", classes="field-input")
+
+                yield Label("Source", classes="section-header")
+                with Horizontal(classes="field-row"):
+                    yield Label("Type", classes="field-label")
+                    yield Select([(t.value, t.value) for t in SourceType], value=app.source.type.value, id="conf-src-type", classes="field-input")
+                with Horizontal(classes="field-row"):
+                    yield Label("Local Path", classes="field-label")
+                    yield Input(value=app.source.path, id="conf-src-path", classes="field-input")
+                with Horizontal(classes="field-row"):
+                    yield Label("Git URL", classes="field-label")
+                    yield Input(value=app.source.git_url, id="conf-src-git-url", classes="field-input")
+                with Horizontal(classes="field-row"):
+                    yield Label("Git Branch", classes="field-label")
+                    yield Input(value=app.source.git_branch, id="conf-src-git-branch", classes="field-input")
+
+                yield Label("Build", classes="section-header")
+                with Horizontal(classes="field-row"):
+                    yield Label("Dockerfile", classes="field-label")
+                    yield Input(value=app.build.dockerfile, id="conf-bld-dockerfile", classes="field-input")
+                with Horizontal(classes="field-row"):
+                    yield Label("Build Context", classes="field-label")
+                    yield Input(value=app.build.context, id="conf-bld-context", classes="field-input")
+                with Horizontal(classes="field-row"):
+                    yield Label("Platform", classes="field-label")
+                    yield Input(value=app.build.platform, id="conf-bld-platform", classes="field-input")
+
+                yield Label("Health Check", classes="section-header")
+                with Horizontal(classes="field-row"):
+                    yield Label("Protocol", classes="field-label")
+                    yield Select([(p.value, p.value) for p in HealthProtocol], value=app.health.protocol.value, id="conf-hlth-proto", classes="field-input")
+                with Horizontal(classes="field-row"):
+                    yield Label("Endpoint", classes="field-label")
+                    yield Input(value=app.health.endpoint, id="conf-hlth-endpt", classes="field-input")
+                with Horizontal(classes="field-row"):
+                    yield Label("Exp. Status", classes="field-label")
+                    yield Input(value=str(app.health.expected_status), id="conf-hlth-status", classes="field-input")
+                with Horizontal(classes="field-row"):
+                    yield Label("Interval (s)", classes="field-label")
+                    yield Input(value=str(app.health.interval_seconds), id="conf-hlth-interval", classes="field-input")
+
+            # --- Column 2 ---
+            with Vertical(classes="config-column"):
+                yield Label("Deployment", classes="section-header")
+                with Horizontal(classes="field-row"):
+                    yield Label("Target Server", classes="field-label")
+                    yield Select(host_options, value=app.host, id="conf-host", classes="field-input")
+                with Horizontal(classes="field-row"):
+                    yield Label("Image Name", classes="field-label")
+                    yield Input(value=app.deploy.image_name, id="conf-dep-image", classes="field-input")
+                with Horizontal(classes="field-row"):
+                    yield Label("Container", classes="field-label")
+                    yield Input(value=app.deploy.container_name, id="conf-dep-container", classes="field-input")
+                with Horizontal(classes="field-row"):
+                    yield Label("Host Port", classes="field-label")
+                    yield Input(value=str(app.deploy.host_port), id="conf-dep-host-port", classes="field-input")
+                with Horizontal(classes="field-row"):
+                    yield Label("Access Level", classes="field-label")
+                    yield Select([(a.value, a.value) for a in AccessLevel], value=app.deploy.access_level.value, id="conf-dep-access", classes="field-input")
+                with Horizontal(classes="field-row"):
+                    yield Label("Network Mode", classes="field-label")
+                    yield Select([(n.value, n.value) for n in NetworkMode], value=app.deploy.network_mode.value, id="conf-dep-net", classes="field-input")
+                with Horizontal(classes="field-row"):
+                    yield Label("Public Host", classes="field-label")
+                    yield Input(value=app.public_host, id="conf-pub-host", classes="field-input")
+
+                yield Label("Resource Limits (0=None)", classes="section-header")
+                with Horizontal(classes="field-row"):
+                    yield Label("Max CPU", classes="field-label")
+                    yield Input(value=str(app.deploy.cpu_limit), id="conf-dep-cpu", classes="field-input")
+                with Horizontal(classes="field-row"):
+                    yield Label("Max RAM (MB)", classes="field-label")
+                    yield Input(value=str(app.deploy.memory_limit_mb), id="conf-dep-ram", classes="field-input")
+
+                yield Label("Volumes", classes="section-header")
+                yield TextArea(
+                    "\n".join(f"{v.host}:{v.container}" + (f":{v.mode}" if v.mode else "") for v in app.volumes),
+                    id="conf-volumes"
+                )
+
+                yield Label("Environment Variables", classes="section-header")
+                yield TextArea(
+                    "\n".join(f"{k}={v}" for k, v in app.env.items()),
+                    id="conf-env"
+                )
+
+    def action_save_config(self) -> None:
+        if not self._app_config:
+            return
+
+        app = self._app_config
+        status = self.query_one("#config-status", Static)
+
+        try:
+            app.host = str(self.query_one("#conf-host", Select).value)
+            app.source.type = SourceType(self.query_one("#conf-src-type", Select).value)
+            app.source.path = self.query_one("#conf-src-path", Input).value
+            app.source.git_url = self.query_one("#conf-src-git-url", Input).value
+            app.source.git_branch = self.query_one("#conf-src-git-branch", Input).value
+
+            app.build.dockerfile = self.query_one("#conf-bld-dockerfile", Input).value
+            app.build.context = self.query_one("#conf-bld-context", Input).value
+            app.build.platform = self.query_one("#conf-bld-platform", Input).value
+
+            app.deploy.image_name = self.query_one("#conf-dep-image", Input).value
+            app.deploy.container_name = self.query_one("#conf-dep-container", Input).value
+            app.deploy.host_port = int(self.query_one("#conf-dep-host-port", Input).value or "0")
+            app.deploy.access_level = AccessLevel(self.query_one("#conf-dep-access", Select).value)
+            app.deploy.network_mode = NetworkMode(self.query_one("#conf-dep-net", Select).value)
+            app.deploy.cpu_limit = float(self.query_one("#conf-dep-cpu", Input).value or "0.0")
+            app.deploy.memory_limit_mb = int(self.query_one("#conf-dep-ram", Input).value or "0")
+            app.public_host = self.query_one("#conf-pub-host", Input).value
+
+            app.health.protocol = HealthProtocol(self.query_one("#conf-hlth-proto", Select).value)
+            app.health.endpoint = self.query_one("#conf-hlth-endpt", Input).value
+            app.health.expected_status = int(self.query_one("#conf-hlth-status", Input).value or "200")
+            app.health.interval_seconds = int(self.query_one("#conf-hlth-interval", Input).value or "30")
+
+
+            volumes = []
+            for line in self.query_one("#conf-volumes", TextArea).text.splitlines():
+                line = line.strip()
+                if ":" in line:
+                    parts = line.split(":", 2)
+                    h = parts[0].strip()
+                    c = parts[1].strip() if len(parts) > 1 else ""
+                    m = parts[2].strip() if len(parts) > 2 else ""
+                    if h and c:
+                        volumes.append(VolumeMount(host=h, container=c, mode=m))
+            app.volumes = volumes
+
+            app.env = {}
+            for line in self.query_one("#conf-env", TextArea).text.splitlines():
+                line = line.strip()
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    app.env[k.strip()] = v.strip()
+
+            errors = validate_config(self._config)
+            if errors:
+                status.update(f"[red]Errors: {'; '.join(errors)}[/red]")
+                return
+
+            save_config(self._config)
+
+            # Record config change in history
+            from datetime import datetime, timezone
+            app.history.append(AppHistoryEvent(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                event_type=HistoryEventType.CONFIG_CHANGED,
+                message="Configuration updated via detail tab",
+            ))
+            save_config(self._config)
+
+            status.update("[green]✅ Configuration saved successfully[/green]")
+            self.query_one("#overview-content", Static).update(self._build_overview())
+
+        except Exception as exc:
+            status.update(f"[red]Error saving config: {exc}[/red]")
 
     # ------------------------------------------------------------------
     # Overview

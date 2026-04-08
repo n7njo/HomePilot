@@ -25,6 +25,7 @@ from homepilot.models import (
     DeployConfig,
     HomePilotConfig,
     HealthConfig,
+    HealthProtocol,
     PortMode,
     AccessLevel,
     NetworkMode,
@@ -171,6 +172,12 @@ class AddResourceScreen(Screen):
             Input(id="public-host", placeholder="e.g. truenas.local"),
 
             Label("  Health Check", classes="section-header"),
+            Label("  Protocol:"),
+            Select(
+                [(p.value, p.value) for p in HealthProtocol],
+                value=p.get("health_protocol", HealthProtocol.HTTP.value),
+                id="health-protocol",
+            ),
             Label("  Endpoint:"),
             Input(value=p.get("health_endpoint", "/api/health"), id="health-endpoint"),
 
@@ -265,6 +272,9 @@ class AddResourceScreen(Screen):
             host_port = int(self.query_one("#host-port", Input).value or "0")
             public_host = self.query_one("#public-host", Input).value.strip()
 
+            health_proto_val = self.query_one("#health-protocol", Select).value
+            health_protocol = HealthProtocol(health_proto_val)
+
             volumes: list[VolumeMount] = []
             for line in self.query_one("#volumes", TextArea).text.splitlines():
                 line = line.strip()
@@ -306,6 +316,7 @@ class AddResourceScreen(Screen):
                     network_mode=network_mode,
                 ),
                 health=HealthConfig(
+                    protocol=health_protocol,
                     endpoint=self.query_one("#health-endpoint", Input).value.strip(),
                 ),
                 volumes=volumes,

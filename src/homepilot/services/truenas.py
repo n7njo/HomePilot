@@ -241,6 +241,12 @@ class TrueNASService:
             port_map = f"{bind_addr}:{app.deploy.host_port}:{app.deploy.container_port}"
             parts.extend(["-p", port_map])
 
+        # RESOURCE LIMITS
+        if app.deploy.cpu_limit > 0:
+            parts.extend(["--cpus", str(app.deploy.cpu_limit)])
+        if app.deploy.memory_limit_mb > 0:
+            parts.extend(["--memory", f"{app.deploy.memory_limit_mb}m"])
+
         for vol in app.volumes:
             vol_str = f"{vol.host}:{vol.container}"
             if vol.mode:

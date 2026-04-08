@@ -40,7 +40,6 @@ class TrueNASProvider:
         self._truenas: TrueNASService | None = None
         self.bootstrap_status: str = "—"
         self.last_metrics: HostMetrics | None = None
-        self._using_netdata: bool = False
         self._metrics_history: list[float] = []
 
     # -- Protocol properties -------------------------------------------------
@@ -56,10 +55,6 @@ class TrueNASProvider:
     @property
     def provider_type(self) -> str:
         return "truenas"
-
-    @property
-    def using_netdata(self) -> bool:
-        return self._using_netdata
 
     @property
     def metrics_history(self) -> list[float]:
@@ -349,17 +344,18 @@ class TrueNASProvider:
             try:
                 m = asyncio.run(nd.fetch_metrics())
                 if m:
-                    self._using_netdata = True
-            except Exception:
+                    logger.debug("TrueNAS Netdata metrics fetched successfully")
+            except Exception as e:
+                logger.debug("TrueNAS Netdata fetch failed: %s", e)
                 pass
 
         if not m:
-            self._using_netdata = False
             # 2. Fallback to SSH parsing
-            if not self.is_connected():
+            if not self.is_connected() or not self._ssh:
                 return None
-            
+
             try:
+
                 # CPU
                 cmd = "top -bn1 | head -n 5"
                 out, _, _ = self._ssh.run_command(cmd)

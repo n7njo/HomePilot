@@ -43,7 +43,6 @@ class ProxmoxProvider:
         self._api: ProxmoxAPI | None = None
         self.bootstrap_status: str = "—"
         self.last_metrics: HostMetrics | None = None
-        self._using_netdata: bool = False
         self._metrics_history: list[float] = []
 
     # -- Protocol properties -------------------------------------------------
@@ -59,10 +58,6 @@ class ProxmoxProvider:
     @property
     def provider_type(self) -> str:
         return "proxmox"
-
-    @property
-    def using_netdata(self) -> bool:
-        return self._using_netdata
 
     @property
     def metrics_history(self) -> list[float]:
@@ -424,13 +419,10 @@ class ProxmoxProvider:
             try:
                 # We are likely in a background thread here
                 m = asyncio.run(nd.fetch_metrics())
-                if m:
-                    self._using_netdata = True
             except Exception:
                 pass
 
         if not m:
-            self._using_netdata = False
             # 2. Fallback to PVE API
             try:
                 api = self._ensure_api()
