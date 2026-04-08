@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from homepilot.models import ProxmoxHostConfig
+from homepilot.models import HomePilotConfig, ProxmoxHostConfig
 from homepilot.providers.base import ResourceStatus, ResourceType
 from homepilot.providers.proxmox import ProxmoxProvider
 from homepilot.services.proxmox_api import (
@@ -47,7 +47,7 @@ def host_config():
 @pytest.fixture
 def provider(host_config):
     """ProxmoxProvider with a mocked API."""
-    p = ProxmoxProvider("proxmox-lab", host_config)
+    p = ProxmoxProvider("proxmox-lab", host_config, HomePilotConfig())
     mock_api = MagicMock(spec=ProxmoxAPI)
     p._api = mock_api
     return p
@@ -386,5 +386,5 @@ class TestProxmoxProviderProtocol:
 
     def test_isinstance_check(self, host_config):
         from homepilot.providers.base import InfraProvider
-        p = ProxmoxProvider("test", host_config)
+        p = ProxmoxProvider("test", host_config, HomePilotConfig())
         assert isinstance(p, InfraProvider)

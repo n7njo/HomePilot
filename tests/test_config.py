@@ -91,6 +91,7 @@ class TestValidation:
     def test_missing_source_path(self):
         config = _default_config()
         config.apps["house-tracker"].source.path = ""
+        config.apps["house-tracker"].deploy.image_name = ""
         errors = validate_config(config)
         assert any("source.path" in e for e in errors)
 
