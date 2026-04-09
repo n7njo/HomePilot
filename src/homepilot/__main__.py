@@ -327,7 +327,8 @@ def host_test(name: str | None) -> None:
     show_default=True,
     help="The admin/root SSH user to connect with for provisioning.",
 )
-def host_bootstrap(name: str, root_user: str) -> None:
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Stream raw log output from each bootstrap step.")
+def host_bootstrap(name: str, root_user: str, verbose: bool) -> None:
     """Run the bootstrap provisioning pipeline on a host."""
     from homepilot.config import load_config, save_config
     from homepilot.services.bootstrap import make_bootstrap_service, HOMEPILOT_USER
@@ -346,7 +347,8 @@ def host_bootstrap(name: str, root_user: str) -> None:
     console.print(f"[bold]Bootstrapping '{name}' ({host_cfg.type}) as {root_user}...[/bold]")
 
     def line_cb(line: str) -> None:
-        console.print(f"    {line}")
+        if verbose:
+            console.print(f"    [dim]{line}[/dim]")
 
     try:
         bootstrapper = make_bootstrap_service(
@@ -411,7 +413,8 @@ def host_bootstrap(name: str, root_user: str) -> None:
 
 @cli.command()
 @click.argument("app_name")
-def deploy(app_name: str) -> None:
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Stream raw log output from each deploy step.")
+def deploy(app_name: str, verbose: bool) -> None:
     """Deploy a Docker app to its configured host."""
     from homepilot.config import load_config, validate_config
     from homepilot.services.deployer import Deployer
@@ -444,7 +447,11 @@ def deploy(app_name: str) -> None:
     else:
         server_config = config.server
 
-    deployer = Deployer(server_config, app_config)
+    def line_cb(line: str) -> None:
+        if verbose:
+            console.print(f"    [dim]{line}[/dim]")
+
+    deployer = Deployer(server_config, app_config, line_callback=line_cb)
 
     console.print(f"[bold]Deploying {app_name} to {host_key}…[/bold]")
     try:
@@ -1097,7 +1104,8 @@ def import_config_cmd(container_name: str, host: str, save: bool) -> None:
     help="Remove the app from the source host after successful migration.",
 )
 @click.option("--yes", "-y", is_flag=True, default=False, help="Skip confirmation prompt.")
-def migrate_cmd(app_name: str, dest_host: str, remove_source: bool, yes: bool) -> None:
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Stream raw log output from each migration step.")
+def migrate_cmd(app_name: str, dest_host: str, remove_source: bool, yes: bool, verbose: bool) -> None:
     """Migrate a managed app from its current host to a destination host.
 
     Streams live progress to the console.  After the migration succeeds,
@@ -1153,7 +1161,8 @@ def migrate_cmd(app_name: str, dest_host: str, remove_source: bool, yes: bool) -
     }
 
     def line_cb(line: str) -> None:
-        console.print(f"    [dim]{line}[/dim]")
+        if verbose:
+            console.print(f"    [dim]{line}[/dim]")
 
     migrator = Migrator(config, app_cfg, dest_host, line_callback=line_cb)
 
@@ -1259,12 +1268,14 @@ def registry_search(query: str, limit: int) -> None:
 )
 @click.option("--name", "app_name", default=None, help="App/container name override.")
 @click.option("--tag", default="latest", show_default=True, help="Image tag to deploy.")
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Stream raw log output from each deploy step.")
 def registry_deploy(
     image: str,
     host_key: str,
     port_mapping: str | None,
     app_name: str | None,
     tag: str,
+    verbose: bool,
 ) -> None:
     """Deploy an image from a registry directly to a host.
 
@@ -1365,7 +1376,11 @@ def registry_deploy(
     else:
         server_config = config.server
 
-    deployer = Deployer(server_config, app_cfg)
+    def line_cb(line: str) -> None:
+        if verbose:
+            console.print(f"    [dim]{line}[/dim]")
+
+    deployer = Deployer(server_config, app_cfg, line_callback=line_cb)
 
     console.print(f"[bold]Deploying [cyan]{image_ref}[/cyan] to [cyan]{host_key}[/cyan] as '{derived_name}'...[/bold]")
     try:
